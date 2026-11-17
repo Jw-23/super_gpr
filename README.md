@@ -1,0 +1,53 @@
+# super_gpr
+
+A modern C++ project powered by CMake and CPM.cmake.
+
+## Generated configuration
+
+| Setting | Value |
+| --- | --- |
+| C++ standard | C++14 |
+| GoogleTest | OFF |
+| Google Benchmark | OFF |
+| spdlog | OFF |
+| fmt | OFF |
+| Eigen | OFF |
+
+These are defaults and can be overridden during configuration with
+`-DPROJECT_ENABLE_TESTING=ON/OFF`, `-DPROJECT_ENABLE_BENCHMARKS=ON/OFF`,
+`-DPROJECT_ENABLE_SPDLOG=ON/OFF`, `-DPROJECT_ENABLE_FMT=ON/OFF`, and
+`-DPROJECT_ENABLE_EIGEN=ON/OFF`. Compatible dependency versions are selected
+automatically for the configured C++ standard.
+
+## Build
+
+Requirements: CMake 3.24 or newer, Git, Ninja, and a compiler supporting the
+selected C++ standard.
+
+The installer has already configured the Debug preset, so
+`build/compile_commands.json` is ready for clangd. Re-run
+`cmake --preset debug` after changing dependency options.
+
+```bash
+cmake --preset debug
+cmake --build --preset debug
+./build/debug/bin/super_gpr
+```
+
+## Tests
+
+When GoogleTest is enabled:
+
+```bash
+ctest --preset debug
+```
+
+## Benchmarks
+
+When Google Benchmark is enabled, use a Release build for meaningful results:
+
+```bash
+cmake --preset release
+cmake --build --preset release --target project_benchmarks
+./build/release/bin/super_gpr_benchmarks
+```
