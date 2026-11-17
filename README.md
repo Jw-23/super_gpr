@@ -274,6 +274,8 @@ LML(theta) - 0.5 * sum_i ((theta_i - prior.mean_i) / prior.standard_deviation_i)
 [Additive GP 诊断报告](experiments/ADDITIVE_DIAGNOSIS.md)。
 训练样本增加到 1024 时的准确性及耗时见
 [样本数学习曲线](experiments/SAMPLE_LEARNING_CURVE.md)。
+与普通全维 Matérn 2.5 GP 的配对预测对照见
+[80 维基线比较](experiments/MATERN_BASELINE_COMPARISON.md)。
 
 ## GPR 的数值约定
 

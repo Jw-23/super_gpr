@@ -13,6 +13,8 @@
 不替换本文件中原实验的数据和结果。
 增加到 512、1024 个训练样本的固定测试集学习曲线见
 [SAMPLE_LEARNING_CURVE.md](SAMPLE_LEARNING_CURVE.md)。
+在完全相同数据上与普通全维 Matérn 2.5 GP 的对照见
+[MATERN_BASELINE_COMPARISON.md](MATERN_BASELINE_COMPARISON.md)。
 
 ## 复现
 
