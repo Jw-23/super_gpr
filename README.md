@@ -225,6 +225,51 @@ Cov(g_i(X*), g_j(X*) | y) = -k_i(X*, X) K_total^-1 k_j(X, X*)
 理论背景：[Kandasamy et al., ICML 2015](https://proceedings.mlr.press/v37/kandasamy15.html)。
 高维预测实验与原始数据见 [experiments/README.md](experiments/README.md)。
 
+### 共享超参数与收缩先验
+
+数据较少时，`make_shared_additive_kernel` 可让所有组共享同一份核超参数。
+协方差仍然是各组子核之和，解析超参数梯度按组相加。
+例如两个二维组共享 ARD 形状：
+
+```cpp
+std::vector<FeatureGroup> groups{{0, 1}, {2, 3}};
+auto prototype = ConstantKernel({0.5, 1e-5, 100.0})
+               * RBF(std::vector<Parameter>{{0.7, 0.1, 20.0}, {0.7, 0.1, 20.0}});
+auto shared = make_shared_additive_kernel(groups, prototype);
+auto gp = make_additive_gp(shared, {0.001, 1e-8, 0.5}, options);
+```
+
+这里优化 1 个共同幅度、2 个组内位置长度尺度和 1 个噪声，共 4 个超参数。
+普通加性核会为每组分别保留参数。共享核的 `components()` 返回实际带幅度的子核，
+因此原来的分量预测接口仍然成立。每组幅度的初值通常取总幅度除以组数。
+共享 ARD 要求组内坐标位置具有可比较的含义；组间差异明显时，应通过训练集内验证判断是否合适。
+原有 `make_additive_kernel` 的独立参数行为不变。
+
+需要保留组间差异时，可为对数超参数配置可选 Gaussian 收缩先验：
+
+```cpp
+auto kernel = make_additive_kernel(groups, prototype) + WhiteKernel({0.001, 1e-8, 0.5});
+GPROptions regularized;
+regularized.normalize_y = true;
+regularized.prior.mean = kernel.theta();
+regularized.prior.standard_deviation = Vector::Constant(kernel.parameter_count(), 0.5);
+regularized.prior.standard_deviation.tail(1).setConstant(1.5);
+GaussianProcessRegressor<decltype(kernel)> regularized_gp(kernel, regularized);
+```
+
+此时最大化以下 MAP 目标，而非只最大化 LML：
+
+```text
+LML(theta) - 0.5 * sum_i ((theta_i - prior.mean_i) / prior.standard_deviation_i)^2
+```
+
+`theta` 始终是对数坐标，固定参数不占位置；先验是这些坐标上的 Gaussian，
+不是物理参数密度的 MAP。两个先验向量为空时关闭该功能；标准差为正无穷可关闭某个坐标的惩罚。
+先验中心和宽度应基于先验知识或训练集内交叉验证选择。
+`log_marginal_likelihood()` 始终报告未加惩罚的 LML，`log_posterior()` 及其带 theta 的重载
+报告上述目标和解析梯度，省略与 theta 无关的常数。
+有先验时，`optimization_results()` 的目标值是负的 MAP 目标。
+
 ## GPR 的数值约定
 
 使用 Cholesky 分解计算后验和 LML。每次 LML 梯度求值将核导数直接与

@@ -200,12 +200,64 @@ AdditiveKernel<K> make_additive_kernel(const std::vector<FeatureGroup> &groups, 
     return AdditiveKernel<K>(groups, prototype);
 }
 
+// Every component uses the same theta; the covariance remains a sum of kernels.
+template <class K> class SharedAdditiveKernel {
+public:
+    SharedAdditiveKernel(const std::vector<FeatureGroup> &groups, const K &prototype)
+        : sum_(groups, prototype) {}
+
+    const std::vector<SubspaceKernel<K>> &components() const { return sum_.components(); }
+    Eigen::Index parameter_count() const { return components().front().parameter_count(); }
+    Vector theta() const { return components().front().theta(); }
+    Bounds bounds() const { return components().front().bounds(); }
+    void set_theta(Point theta) {
+        if (theta.size() != parameter_count()) {
+            throw std::invalid_argument("Wrong shared theta size");
+        }
+        Vector expanded(sum_.parameter_count());
+        Eigen::Index offset = 0;
+        for (const auto &component : components()) {
+            expanded.segment(offset, component.parameter_count()) = theta;
+            offset += component.parameter_count();
+        }
+        sum_.set_theta(expanded);
+    }
+    double value(Point x, Point y, bool same) const { return sum_.value(x, y, same); }
+    void gradient(Point x, Point y, bool same, Gradient out) const {
+        out.setZero();
+        Vector scratch(parameter_count());
+        for (const auto &component : components()) {
+            component.gradient(x, y, same, scratch);
+            out += scratch;
+        }
+    }
+    void input_gradient(Point x, Point y, Gradient out) const { sum_.input_gradient(x, y, out); }
+    void diagonal_gradient(Point x, Gradient out) const { sum_.diagonal_gradient(x, out); }
+
+private:
+    AdditiveKernel<K> sum_;
+};
+
+template <class K>
+SharedAdditiveKernel<K> make_shared_additive_kernel(const std::vector<FeatureGroup> &groups,
+                                                    const K &prototype) {
+    return SharedAdditiveKernel<K>(groups, prototype);
+}
+
 template <class K> using AdditiveGP = GaussianProcessRegressor<AddKernel<AdditiveKernel<K>, WhiteKernel>>;
+template <class K>
+using SharedAdditiveGP = GaussianProcessRegressor<AddKernel<SharedAdditiveKernel<K>, WhiteKernel>>;
 
 template <class K>
 AdditiveGP<K> make_additive_gp(AdditiveKernel<K> kernel, Parameter noise = {1e-4, 1e-8, 1.0},
                                GPROptions options = {}) {
     return AdditiveGP<K>(std::move(kernel) + WhiteKernel(noise), std::move(options));
+}
+
+template <class K>
+SharedAdditiveGP<K> make_additive_gp(SharedAdditiveKernel<K> kernel, Parameter noise = {1e-4, 1e-8, 1.0},
+                                     GPROptions options = {}) {
+    return SharedAdditiveGP<K>(std::move(kernel) + WhiteKernel(noise), std::move(options));
 }
 
 } // namespace super_gpr

@@ -170,4 +170,115 @@ TEST(AdditiveGP, JointLMLAndPredictionGradientsIncludeEveryGroup) {
     EXPECT_FALSE(optimized.kernel().theta().isApprox(theta));
     EXPECT_EQ(optimized.kernel().parameter_count(), 5);
 }
+
+TEST(SharedAdditiveKernel, TiedParametersPreserveCovarianceAndAnalyticGradients) {
+    const auto prototype = ConstantKernel({1.3}) * Matern(std::vector<Parameter>{{0.7}, {1.2}}, 2.5);
+    auto kernel = make_shared_additive_kernel({{0, 2}, {1, 3}}, prototype);
+    const auto independent = make_additive_kernel({{0, 2}, {1, 3}}, prototype);
+    static_assert(IsKernel<decltype(kernel)>::value, "Shared additive kernels implement Kernel");
+    EXPECT_EQ(kernel.parameter_count(), 3);
+    EXPECT_EQ(independent.parameter_count(), 6);
+    Vector x = (Vector(4) << 0.2, -0.3, 0.7, 0.1).finished();
+    const Vector y = (Vector(4) << 0.8, 0.4, -0.1, -0.4).finished();
+    EXPECT_DOUBLE_EQ(kernel.value(x, y, false), independent.value(x, y, false));
+    const Vector theta = kernel.theta();
+    Vector gradient(theta.size());
+    kernel.gradient(x, y, false, gradient);
+    constexpr double step = 1e-6;
+    for (Eigen::Index index = 0; index < theta.size(); ++index) {
+        Vector shifted = theta;
+        shifted[index] += step;
+        kernel.set_theta(shifted);
+        const double upper = kernel.value(x, y, false);
+        shifted[index] -= 2.0 * step;
+        kernel.set_theta(shifted);
+        const double lower = kernel.value(x, y, false);
+        EXPECT_NEAR(gradient[index], (upper - lower) / (2.0 * step), 1e-8);
+        kernel.set_theta(theta);
+    }
+    Vector spatial(x.size());
+    kernel.input_gradient(x, y, spatial);
+    for (Eigen::Index axis = 0; axis < x.size(); ++axis) {
+        x[axis] += step;
+        const double upper = kernel.value(x, y, false);
+        x[axis] -= 2.0 * step;
+        const double lower = kernel.value(x, y, false);
+        x[axis] += step;
+        EXPECT_NEAR(spatial[axis], (upper - lower) / (2.0 * step), 1e-8);
+    }
+    const Vector updated = theta.array() + 0.1;
+    kernel.set_theta(updated);
+    for (const auto &component : kernel.components()) {
+        EXPECT_TRUE(component.theta().isApprox(updated));
+    }
+    auto fixed = make_shared_additive_kernel({{0}, {1}}, RBF(Parameter::fixed(0.7)));
+    fixed.set_theta(Vector{});
+    EXPECT_EQ(fixed.parameter_count(), 0);
+}
+
+TEST(SharedAdditiveGP, FittedComponentsReconstructTheJointPrediction) {
+    auto kernel = make_shared_additive_kernel({{0}, {1}}, ConstantKernel({0.5}) * RBF({0.7}));
+    GPROptions options;
+    options.normalize_y = true;
+    auto model = make_additive_gp(kernel, {0.01, 1e-6, 0.5}, options);
+    Matrix x(5, 2);
+    x << 0.0, 0.1, 0.5, 0.8, 1.0, -0.3, 1.5, 0.4, 2.0, -0.5;
+    const Vector y = x.col(0).array().sin() + x.col(1).array().cos();
+    model.fit(x, y);
+    EXPECT_EQ(model.kernel().parameter_count(), 3);
+    const auto &components = model.kernel().left().components();
+    Matrix reconstructed =
+        model.predict_component(components[0], x).mean + model.predict_component(components[1], x).mean;
+    reconstructed.rowwise() += model.mean_offset().transpose();
+    EXPECT_TRUE(reconstructed.isApprox(model.predict(x).mean));
+}
+
+TEST(GPRPrior, PosteriorGradientMatchesFiniteDifferencesAndLikelihoodStaysUnpenalized) {
+    auto kernel = ConstantKernel({1.2}) * RBF({0.7}) + WhiteKernel({0.03});
+    GPROptions options;
+    options.optimize = false;
+    options.prior.mean = kernel.theta().array() + 0.2;
+    options.prior.standard_deviation =
+        (Vector(3) << 0.5, 1.0, std::numeric_limits<double>::infinity()).finished();
+    GaussianProcessRegressor<decltype(kernel)> model(kernel, options);
+    Matrix x(5, 1);
+    x << 0.0, 0.3, 0.7, 1.1, 1.8;
+    const Vector y = x.col(0).array().sin();
+    model.fit(x, y);
+    const Vector theta = model.kernel().theta();
+    const auto likelihood = model.log_marginal_likelihood(theta);
+    const auto posterior = model.log_posterior(theta);
+    EXPECT_NEAR(likelihood.value - posterior.value, 0.1, 1e-12);
+    EXPECT_NEAR(posterior.gradient[0] - likelihood.gradient[0], 0.8, 1e-12);
+    EXPECT_NEAR(posterior.gradient[1] - likelihood.gradient[1], 0.2, 1e-12);
+    EXPECT_DOUBLE_EQ(posterior.gradient[2], likelihood.gradient[2]);
+    EXPECT_NEAR(model.log_posterior(), posterior.value, 1e-12);
+    EXPECT_NEAR(model.log_marginal_likelihood(), likelihood.value, 1e-12);
+    constexpr double step = 1e-6;
+    for (Eigen::Index index = 0; index < theta.size(); ++index) {
+        Vector shifted = theta;
+        shifted[index] += step;
+        const double upper = model.log_posterior(shifted).value;
+        shifted[index] -= 2.0 * step;
+        const double lower = model.log_posterior(shifted).value;
+        EXPECT_NEAR(posterior.gradient[index], (upper - lower) / (2.0 * step), 1e-7);
+    }
+}
+
+TEST(GPRPrior, MAPOptimizationImprovesThePenalizedObjectiveAndRejectsInvalidPrior) {
+    const auto kernel = ConstantKernel({1.2}) * RBF({0.7}) + WhiteKernel({0.03});
+    GPROptions options;
+    options.prior.mean = kernel.theta();
+    options.prior.standard_deviation = Vector::Constant(3, 0.01);
+    Matrix x(5, 1);
+    x << 0.0, 0.3, 0.7, 1.1, 1.8;
+    const Vector y = x.col(0).array().sin();
+    GaussianProcessRegressor<decltype(kernel)> model(kernel, options);
+    model.fit(x, y);
+    EXPECT_GE(model.log_posterior(), model.log_posterior(kernel.theta()).value);
+    EXPECT_LT((model.kernel().theta() - kernel.theta()).norm(), 0.05);
+    options.prior.standard_deviation = Vector::Ones(2);
+    GaussianProcessRegressor<decltype(kernel)> invalid(kernel, options);
+    EXPECT_THROW(invalid.fit(x, y), std::invalid_argument);
+}
 } // namespace

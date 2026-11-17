@@ -8,6 +8,11 @@
 
 namespace super_gpr {
 
+struct GaussianLogPrior {
+    Vector mean;
+    Vector standard_deviation;
+};
+
 struct GPROptions {
     double alpha = 1e-10;
     Vector sample_noise;
@@ -16,6 +21,7 @@ struct GPROptions {
     int optimizer_restarts = 0;
     std::uint64_t random_seed = 0;
     LBFGSBOptions optimizer;
+    GaussianLogPrior prior;
 };
 
 struct Likelihood {
@@ -55,6 +61,13 @@ public:
         }
         if (options_.optimizer_restarts < 0) {
             throw std::invalid_argument("optimizer_restarts must be nonnegative");
+        }
+        const auto prior_size = options_.prior.mean.size();
+        if (prior_size != options_.prior.standard_deviation.size() ||
+            (prior_size != 0 && prior_size != kernel_.parameter_count()) ||
+            (options_.prior.standard_deviation.array() <= 0.0).any()) {
+            throw std::invalid_argument(
+                "Prior vectors must match theta and have positive standard deviations");
         }
         fitted_ = false;
         x_ = x;
@@ -96,6 +109,17 @@ public:
         K candidate = kernel_;
         candidate.set_theta(theta);
         return evaluate_likelihood(candidate);
+    }
+
+    // Gaussian density in log-parameter coordinates, up to a theta-independent constant.
+    double log_posterior() const {
+        require_fitted();
+        return likelihood_ - prior_penalty(kernel_.theta());
+    }
+    Likelihood log_posterior(Point theta) const {
+        auto result = log_marginal_likelihood(theta);
+        apply_prior(theta, result);
+        return result;
     }
 
     Prediction predict(const Matrix &x, bool return_covariance = false) const {
@@ -251,6 +275,21 @@ private:
         }
         return result;
     }
+    double prior_penalty(Point theta) const {
+        if (options_.prior.mean.size() == 0) {
+            return 0.0;
+        }
+        return 0.5 * ((theta - options_.prior.mean).array() / options_.prior.standard_deviation.array())
+                         .square()
+                         .sum();
+    }
+    void apply_prior(Point theta, Likelihood &result) const {
+        if (options_.prior.mean.size() != 0) {
+            result.value -= prior_penalty(theta);
+            result.gradient.array() -=
+                (theta - options_.prior.mean).array() / options_.prior.standard_deviation.array().square();
+        }
+    }
     void optimize_kernel() {
         const auto bounds = kernel_.bounds();
         if (options_.optimizer_restarts > 0 && (!bounds.lower.allFinite() || !bounds.upper.allFinite())) {
@@ -259,7 +298,8 @@ private:
         K candidate = kernel_;
         auto objective = [&](const Vector &theta, Vector &gradient) {
             candidate.set_theta(theta);
-            const auto likelihood = evaluate_likelihood(candidate);
+            auto likelihood = evaluate_likelihood(candidate);
+            apply_prior(theta, likelihood);
             gradient = -likelihood.gradient;
             return -likelihood.value;
         };
