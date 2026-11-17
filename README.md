@@ -6,7 +6,8 @@ L-BFGS-B 优化。提供预测均值、标准差、完整协方差、多输出�
 ## 构建与验证
 
 需要 CMake 3.24+、Ninja、Git 和支持 C++14 的编译器。
-Eigen 3.4 与 LBFGS++ 为必要依赖，CPM 自动获取固定版本；优先使用已安装的 Eigen。
+Eigen 3.4 与 LBFGS++ 为必要依赖。Eigen 优先使用已安装版本，否则由 CPM 获取固定版本；
+LBFGS++ 的头文件和许可证已内置于 `third_party/lbfgspp`，构建时无需下载。
 GoogleTest 和 Google Benchmark 默认启用，可分别通过
 `PROJECT_ENABLE_TESTING`、`PROJECT_ENABLE_BENCHMARKS` 关闭。
 
@@ -188,7 +189,8 @@ Cholesky 使用列主序，输入矩阵使用行主序，方便逐样本计算�
 ## 独立 L-BFGS-B
 
 只包含 `super_gpr/optimizer.hpp` 即可使用，不依赖 Kernel 或 GPR。
-底层是固定版本的 [LBFGS++](https://lbfgspp.statr.me/)，包含广义 Cauchy 点、子空间最小化和
+底层是内置的 [LBFGS++](https://lbfgspp.statr.me/)，版本来源见
+[third_party/lbfgspp/README.md](third_party/lbfgspp/README.md)，包含广义 Cauchy 点、子空间最小化和
 More–Thuente 线搜索。与 SciPy 的实现可能采用不同迭代路径。
 
 ```cpp

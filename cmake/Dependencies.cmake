@@ -41,11 +41,6 @@ if(NOT TARGET Eigen3::Eigen)
   target_include_directories(project_eigen SYSTEM INTERFACE "${eigen_SOURCE_DIR}")
 endif()
 
-CPMAddPackage(
-  NAME lbfgspp
-  URL https://github.com/yixuan/LBFGSpp/archive/c524a407fb85b74807f53de5a3ca2ddbcc164e54.tar.gz
-  URL_HASH SHA256=8fbb7037c4e0bf0d83ced74463092154038bc0bbb43f77fe38f2bc7c3414c2d8
-  DOWNLOAD_ONLY YES
-)
 add_library(project_lbfgspp INTERFACE)
-target_include_directories(project_lbfgspp SYSTEM INTERFACE "${lbfgspp_SOURCE_DIR}/include")
+target_include_directories(project_lbfgspp SYSTEM INTERFACE
+  "${CMAKE_CURRENT_LIST_DIR}/../third_party/lbfgspp/include")
