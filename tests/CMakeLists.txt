@@ -1,4 +1,4 @@
-add_executable(project_tests test_gpr.cpp)
+add_executable(project_tests test_gpr.cpp test_additive.cpp)
 set_target_properties(project_tests PROPERTIES OUTPUT_NAME "${PROJECT_NAME}_tests")
 target_link_libraries(
   project_tests

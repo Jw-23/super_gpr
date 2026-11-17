@@ -99,39 +99,39 @@ public:
     }
 
     Prediction predict(const Matrix &x, bool return_covariance = false) const {
-        if (fitted_ && x.cols() != x_.cols()) {
+        return predict_kernel(kernel_, x, return_covariance, true);
+    }
+
+    // Condition a constituent prior on the same joint observations and factorization.
+    template <class Component>
+    Prediction predict_component(const Component &component, const Matrix &x,
+                                 bool return_covariance = false) const {
+        require_fitted();
+        return predict_kernel(component, x, return_covariance, false);
+    }
+
+    const Vector &mean_offset() const {
+        require_fitted();
+        return mean_;
+    }
+
+    // Distinct additive components are independent a priori, but correlated a posteriori.
+    template <class First, class Second>
+    std::vector<Matrix> component_cross_covariance(const First &first, const Second &second,
+                                                   const Matrix &x) const {
+        require_fitted();
+        if (x.cols() != x_.cols()) {
             throw std::invalid_argument("Wrong prediction feature count");
         }
-        const Eigen::Index outputs = fitted_ ? y_.cols() : 1;
-        Prediction result{Matrix::Zero(x.rows(), outputs), Matrix(x.rows(), outputs), {}};
-        Matrix solved;
-        if (fitted_) {
-            const Matrix cross = covariance(kernel_, x, x_);
-            result.mean.noalias() = cross * weights_;
-            solved = cholesky_.matrixL().solve(cross.transpose());
-        }
-        Vector variance(x.rows());
-        for (Eigen::Index row = 0; row < x.rows(); ++row) {
-            const auto point = x.row(row).transpose();
-            const double prior = kernel_.value(point, point, true);
-            variance[row] = std::max(0.0, prior - (fitted_ ? solved.col(row).squaredNorm() : 0.0));
-        }
-        Matrix posterior;
-        if (return_covariance) {
-            posterior = covariance(kernel_, x);
-            if (fitted_) {
-                posterior.noalias() -= solved.transpose() * solved;
-            }
-            posterior.diagonal() = variance;
-        }
-        for (Eigen::Index output = 0; output < outputs; ++output) {
-            const double scale = fitted_ ? scale_[output] : 1.0;
-            const double mean = fitted_ ? mean_[output] : 0.0;
-            result.mean.col(output) = result.mean.col(output).array() * scale + mean;
-            result.standard_deviation.col(output) = variance.array().sqrt() * scale;
-            if (return_covariance) {
-                result.covariance.emplace_back(posterior * (scale * scale));
-            }
+        const Matrix first_cross = covariance(first, x, x_);
+        const Matrix second_cross = covariance(second, x, x_);
+        const Matrix first_solved = cholesky_.matrixL().solve(first_cross.transpose());
+        const Matrix second_solved = cholesky_.matrixL().solve(second_cross.transpose());
+        const Matrix cross = -first_solved.transpose() * second_solved;
+        std::vector<Matrix> result;
+        result.reserve(static_cast<std::size_t>(y_.cols()));
+        for (Eigen::Index output = 0; output < y_.cols(); ++output) {
+            result.emplace_back(cross * (scale_[output] * scale_[output]));
         }
         return result;
     }
@@ -168,6 +168,46 @@ public:
     }
 
 private:
+    template <class Component>
+    Prediction predict_kernel(const Component &component, const Matrix &x, bool return_covariance,
+                              bool include_mean) const {
+        if (fitted_ && x.cols() != x_.cols()) {
+            throw std::invalid_argument("Wrong prediction feature count");
+        }
+        const Eigen::Index outputs = fitted_ ? y_.cols() : 1;
+        Prediction result{Matrix::Zero(x.rows(), outputs), Matrix(x.rows(), outputs), {}};
+        Matrix solved;
+        if (fitted_) {
+            const Matrix cross = covariance(component, x, x_);
+            result.mean.noalias() = cross * weights_;
+            solved = cholesky_.matrixL().solve(cross.transpose());
+        }
+        Vector variance(x.rows());
+        for (Eigen::Index row = 0; row < x.rows(); ++row) {
+            const auto point = x.row(row).transpose();
+            const double prior = component.value(point, point, true);
+            variance[row] = std::max(0.0, prior - (fitted_ ? solved.col(row).squaredNorm() : 0.0));
+        }
+        Matrix posterior;
+        if (return_covariance) {
+            posterior = covariance(component, x);
+            if (fitted_) {
+                posterior.noalias() -= solved.transpose() * solved;
+            }
+            posterior.diagonal() = variance;
+        }
+        for (Eigen::Index output = 0; output < outputs; ++output) {
+            const double scale = fitted_ ? scale_[output] : 1.0;
+            const double mean = fitted_ && include_mean ? mean_[output] : 0.0;
+            result.mean.col(output) = result.mean.col(output).array() * scale + mean;
+            result.standard_deviation.col(output) = variance.array().sqrt() * scale;
+            if (return_covariance) {
+                result.covariance.emplace_back(posterior * (scale * scale));
+            }
+        }
+        return result;
+    }
+
     void require_fitted() const {
         if (!fitted_) {
             throw std::logic_error("Fit the Gaussian process first");

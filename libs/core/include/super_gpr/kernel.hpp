@@ -315,6 +315,8 @@ template <class K1, class K2, class Operation> class BinaryKernel {
 
 public:
     BinaryKernel(K1 left, K2 right) : left_(std::move(left)), right_(std::move(right)) {}
+    const K1 &left() const { return left_; }
+    const K2 &right() const { return right_; }
     Eigen::Index parameter_count() const { return left_.parameter_count() + right_.parameter_count(); }
     Vector theta() const {
         Vector out(parameter_count());
