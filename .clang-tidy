@@ -29,7 +29,7 @@ Checks: >
   -readability-magic-numbers
 
 WarningsAsErrors: '*'
-HeaderFilterRegex: 'libs/core/include/super_gpr/.*'
+HeaderFilterRegex: '(libs/core/include/super_gpr|experiments)/.*'
 
 # Eigen views intentionally use value semantics; matrix indexing is bounded by loops.
 # Standard mathematical precedence keeps numerical formulas readable.
