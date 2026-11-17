@@ -229,6 +229,7 @@ Cov(g_i(X*), g_j(X*) | y) = -k_i(X*, X) K_total^-1 k_j(X, X*)
 
 数据较少时，`make_shared_additive_kernel` 可让所有组共享同一份核超参数。
 协方差仍然是各组子核之和，解析超参数梯度按组相加。
+共享参数不会强制各组潜在函数的取值相同，各组仍对应不同的潜在 GP。
 例如两个二维组共享 ARD 形状：
 
 ```cpp
@@ -269,6 +270,8 @@ LML(theta) - 0.5 * sum_i ((theta_i - prior.mean_i) / prior.standard_deviation_i)
 `log_marginal_likelihood()` 始终报告未加惩罚的 LML，`log_posterior()` 及其带 theta 的重载
 报告上述目标和解析梯度，省略与 theta 无关的常数。
 有先验时，`optimization_results()` 的目标值是负的 MAP 目标。
+训练集内选择与新种子消融验证见
+[Additive GP 诊断报告](experiments/ADDITIVE_DIAGNOSIS.md)。
 
 ## GPR 的数值约定
 
@@ -288,6 +291,7 @@ Cholesky 使用列主序，输入矩阵使用行主序，方便逐样本计算�
 | `optimizer_restarts` | `0` | 初值之外的额外重启次数 |
 | `random_seed` | `0` | 本库内重启可复现 |
 | `optimizer` | `LBFGSBOptions{}` | 优化器配置 |
+| `prior` | 空 | 对数超参数的可选 Gaussian 收缩先验 |
 
 噪声方差与 scikit-learn 一样作用于归一化后的训练目标。预测时恢复目标的均值和尺度。
 `alpha` 不加入预测协方差；若 Kernel 包含 `WhiteKernel`，其噪声包含在预测方差中。
