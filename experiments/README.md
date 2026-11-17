@@ -24,6 +24,69 @@ python3 experiments/summarize.py --output experiments/RESULTS.md
 python3 experiments/summarize.py build/additive-quick.csv
 ```
 
+## Matérn 与 RBF 的配对对照
+
+可通过 `--kernel=rbf|matern15|matern25` 选择核族；不传参数时仍运行 RBF。
+Matérn 的 nu 固定为 1.5 或 2.5，幅度、长度尺度和噪声通过相同的 LML 优化。
+三个核族使用相同的数据生成函数、输入、噪声、随机种子、初始化规则、参数边界和优化预算。
+各组仍通过核相加构成同一个联合 GP。
+
+```bash
+./build/release/bin/additive_experiment --kernel=matern15 > experiments/matern15_results.csv
+./build/release/bin/additive_experiment --kernel=matern25 > experiments/matern25_results.csv
+python3 experiments/summarize.py experiments/additive_results.csv \
+  experiments/matern15_results.csv experiments/matern25_results.csv \
+  --output experiments/MATERN_RESULTS.md
+```
+
+新增 144 次 Matérn 拟合，与原有 72 次 RBF 记录合并，共 216 次拟合，全部达到优化器收敛条件。
+完整结果见 [MATERN_RESULTS.md](MATERN_RESULTS.md)，原始记录见
+[matern15_results.csv](matern15_results.csv) 和 [matern25_results.csv](matern25_results.csv)。
+汇总脚本兼容旧 RBF CSV：缺少 `kernel` 列时按 RBF 读取，旧模型名 `full_rbf` 对应
+新输出中的 `full_iso`。跨核比较时检查三个核族的数据集键完全一致。
+
+4 维、使用 ARD 时的 RMSE 均值如下，测试集每次包含 1024 个无噪声真值，重复 3 个种子：
+
+| 训练样本数 | RBF | Matérn 1.5 | Matérn 2.5 |
+| --- | --- | --- | --- |
+| 128 | 0.0395 | 0.0464 | 0.0419 |
+| 256 | 0.0245 | 0.0306 | 0.0275 |
+
+256 个样本时，三个核的平均 R² 分别为 0.9975、0.9960、0.9968。
+在这组低维光滑函数上，三个核都能接近真值，RBF 略好，Matérn 2.5 更接近 RBF 的表现。
+
+对于加性结构，R² 均值如下：
+
+| 维度 | 训练样本数 | RBF | Matérn 1.5 | Matérn 2.5 |
+| --- | --- | --- | --- | --- |
+| 20 | 256 | 0.9505 | 0.8980 | 0.9249 |
+| 80 | 128 | 0.1825 | 0.2553 | 0.2271 |
+| 80 | 256 | 0.4439 | 0.4569 | 0.4505 |
+
+Matérn 1.5 改善了本次 80 维模型的平均表现，但 256 样本时改善较小，
+仍没有达到低维模型的预测精度。20 维加性函数则以 RBF 更好。
+非加性对照的全部结果也保留在报告中。
+
+本实验的函数由正弦、余弦、多项式或 Fourier 特征组成，均很光滑，
+没有覆盖粗糙函数或不连续函数，不能据此断言 RBF 在所有任务中优于 Matérn。
+Matérn 的 nu 控制光滑性，较小的 nu 允许较粗糙的函数；
+1.5 和 2.5 的定义及固定 nu 的约定见
+[scikit-learn Matérn 文档](https://scikit-learn.org/stable/modules/generated/sklearn.gaussian_process.kernels.Matern.html)。
+三个种子的重复不足以支持普遍优劣结论，且收敛不保证全局最优。
+不同核族的拟合时间采集于不同时段，仅作运行成本记录。
+
+库内使用方式：
+
+```cpp
+auto kernel = ConstantKernel({1.0, 1e-5, 100.0})
+            * Matern({0.7, 0.1, 20.0}, 2.5)
+            + WhiteKernel({0.001, 1e-8, 0.5});
+GaussianProcessRegressor<decltype(kernel)> gp(kernel, options);
+```
+
+需要 ARD 时，为 `Matern` 传入每维一个 `Parameter` 的向量；需要加性模型时，
+将 `ConstantKernel * Matern` 作为 `make_additive_kernel` 的子核原型。
+
 正式实验的原始记录在 [additive_results.csv](additive_results.csv)，
 统计表在 [RESULTS.md](RESULTS.md)。汇总脚本检查模型配对、超参数数量、参数有限性、
 最终 LML 不低于初始 LML，以及 NRMSE 与 R² 的一致性。

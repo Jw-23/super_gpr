@@ -80,6 +80,8 @@ auto next = optimize_acquisition(gp, EI(y.minCoeff(), 0.01), starts, bounds);
 `Matern` 提供常用的 `nu = 0.5, 1.5, 2.5, infinity`，默认 `1.5`；`nu` 固定，不参与优化。
 其他 `nu` 暂不支持。`RationalQuadratic`、`ExpSineSquared` 使用各向同性长度尺度。
 `ExpSineSquared` 的周期性基于欧氏距离，与 scikit-learn 一致，通常用于一维周期输入。
+Matérn 1.5、2.5 与 RBF 的同数据预测对照见
+[核函数实验](experiments/README.md#matérn-与-rbf-的配对对照)，包含普通、ARD 和加性模型。
 
 ```cpp
 auto sum = RBF{} + WhiteKernel{};       // AddKernel<RBF, WhiteKernel>
