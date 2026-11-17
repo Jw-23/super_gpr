@@ -1,39 +1,28 @@
-#include <corelib/simple.hpp>
-
-#ifdef PROJECT_HAS_EIGEN
-#include <Eigen/Core>
-#endif
-
-#ifdef PROJECT_HAS_FMT
-#include <fmt/format.h>
-#endif
-
-#ifdef PROJECT_HAS_SPDLOG
-#include <spdlog/spdlog.h>
-#elif !defined(PROJECT_HAS_FMT)
+#include <super_gpr/acquisition.hpp>
 #include <iostream>
-#endif
 
-auto main() -> int
-{
-    constexpr double lhs = 1.2;
-    constexpr double rhs = 43.3;
-
-#ifdef PROJECT_HAS_EIGEN
-    Eigen::Vector2d values;
-    values << lhs, rhs;
-    const auto result = values.sum();
-#else
-    const auto result = corelib::add(lhs, rhs);
-#endif
-
-#ifdef PROJECT_HAS_SPDLOG
-    spdlog::info("sum is {:.2f}", result);
-#elif defined(PROJECT_HAS_FMT)
-    fmt::print("sum is {:.2f}\n", result);
-#else
-    std::cout << "sum is " << result << '\n';
-#endif
-
-    return 0;
+int main() try {
+    using namespace super_gpr;
+    Matrix x(6, 1);
+    x << 0.0, 0.8, 1.6, 2.4, 3.2, 4.0;
+    const Vector y = x.col(0).array().sin();
+    auto kernel = ConstantKernel({1.0, 1e-3, 1e3}) * RBF({1.0, 0.1, 10.0}) +
+                  WhiteKernel({1e-4, 1e-8, 0.1});
+    GPROptions options;
+    options.normalize_y = true;
+    GaussianProcessRegressor<decltype(kernel)> model(kernel, options);
+    model.fit(x, y);
+    Matrix candidates(3, 1);
+    candidates << 0.4, 2.0, 3.6;
+    const auto prediction = model.predict(candidates);
+    const Bounds bounds{Vector::Constant(1, 0.0), Vector::Constant(1, 4.0)};
+    const auto next = optimize_acquisition(model, EI(y.minCoeff()), candidates, bounds);
+    std::cout << "LML: " << model.log_marginal_likelihood() << '\n'
+              << "Mean:\n" << prediction.mean << '\n'
+              << "Standard deviation:\n" << prediction.standard_deviation << '\n'
+              << "Next EI point: " << next.x.transpose() << " (EI=" << next.value << ")\n";
+}
+catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return 1;
 }

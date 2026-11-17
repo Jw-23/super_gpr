@@ -1,4 +1,4 @@
-add_executable(project_tests test_add.cpp)
+add_executable(project_tests test_gpr.cpp)
 set_target_properties(project_tests PROPERTIES OUTPUT_NAME "${PROJECT_NAME}_tests")
 target_link_libraries(
   project_tests
@@ -6,4 +6,4 @@ target_link_libraries(
 )
 
 include(GoogleTest)
-gtest_discover_tests(project_tests)
+gtest_discover_tests(project_tests DISCOVERY_TIMEOUT 60)

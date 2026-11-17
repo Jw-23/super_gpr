@@ -1,4 +1,4 @@
-add_executable(project_benchmarks benchmark_add.cpp)
+add_executable(project_benchmarks benchmark_gpr.cpp)
 set_target_properties(
   project_benchmarks PROPERTIES OUTPUT_NAME "${PROJECT_NAME}_benchmarks"
 )

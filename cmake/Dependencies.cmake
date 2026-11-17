@@ -1,12 +1,3 @@
-if(NOT PROJECT_ENABLE_TESTING
-   AND NOT PROJECT_ENABLE_BENCHMARKS
-   AND NOT PROJECT_ENABLE_SPDLOG
-   AND NOT PROJECT_ENABLE_FMT
-   AND NOT PROJECT_ENABLE_EIGEN
-)
-  return()
-endif()
-
 include("${CMAKE_CURRENT_LIST_DIR}/../CPM.cmake")
 
 if(CMAKE_CXX_STANDARD LESS 17)
@@ -20,7 +11,7 @@ endif()
 
 set(PROJECT_SPDLOG_VERSION 1.17.0)
 set(PROJECT_FMT_VERSION 12.1.0)
-set(PROJECT_EIGEN_VERSION 5.0.1)
+set(PROJECT_EIGEN_VERSION 3.4.0)
 
 message(
   STATUS
@@ -80,19 +71,22 @@ if(PROJECT_ENABLE_SPDLOG)
   )
 endif()
 
-if(PROJECT_ENABLE_EIGEN)
+find_package(Eigen3 3.4 QUIET NO_MODULE)
+if(NOT TARGET Eigen3::Eigen)
   CPMAddPackage(
     NAME eigen
-    GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-    GIT_TAG ${PROJECT_EIGEN_VERSION}
+    URL https://github.com/eigen-mirror/eigen/archive/refs/tags/3.4.0.tar.gz
     DOWNLOAD_ONLY YES
   )
-
-  if(NOT TARGET Eigen3::Eigen)
-    add_library(project_eigen INTERFACE)
-    add_library(Eigen3::Eigen ALIAS project_eigen)
-    target_include_directories(
-      project_eigen SYSTEM INTERFACE "${eigen_SOURCE_DIR}"
-    )
-  endif()
+  add_library(project_eigen INTERFACE)
+  add_library(Eigen3::Eigen ALIAS project_eigen)
+  target_include_directories(project_eigen SYSTEM INTERFACE "${eigen_SOURCE_DIR}")
 endif()
+
+CPMAddPackage(
+  NAME lbfgspp
+  URL https://github.com/yixuan/LBFGSpp/archive/c524a407fb85b74807f53de5a3ca2ddbcc164e54.tar.gz
+  DOWNLOAD_ONLY YES
+)
+add_library(project_lbfgspp INTERFACE)
+target_include_directories(project_lbfgspp SYSTEM INTERFACE "${lbfgspp_SOURCE_DIR}/include")

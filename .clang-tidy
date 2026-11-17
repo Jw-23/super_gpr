@@ -12,10 +12,16 @@ Checks: >
   performance-*,
   readability-*,
   -android-*,
+  -bugprone-easily-swappable-parameters,
   -bugprone-macro-parentheses,
   -bugprone-multiple-statement-macro,
   -cppcoreguidelines-avoid-magic-numbers,
   -cppcoreguidelines-macro-usage,
+  -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
+  -readability-convert-member-functions-to-static,
+  -performance-enum-size,
+  -readability-math-missing-parentheses,
+  -readability-trailing-comma,
   -llvmlibc-*,
   -llvm-*,
   -modernize-use-trailing-return-type,
@@ -23,9 +29,17 @@ Checks: >
   -readability-magic-numbers
 
 WarningsAsErrors: '*'
-HeaderFilterRegex: ''
+HeaderFilterRegex: 'libs/core/include/super_gpr/.*'
 
+# Eigen views intentionally use value semantics; matrix indexing is bounded by loops.
+# Standard mathematical precedence keeps numerical formulas readable.
 CheckOptions:
+  - key: performance-unnecessary-value-param.AllowedTypes
+    value: 'super_gpr::Point;super_gpr::Gradient;Eigen::Ref'
+  - key: readability-identifier-length.MinimumParameterNameLength
+    value: '1'
+  - key: readability-identifier-length.MinimumLoopCounterNameLength
+    value: '1'
   - key: bugprone-use-after-move.MovedStandardClasses
     value: 'std::basic_string;std::vector;std::list;std::map;std::set;std::unique_ptr;std::shared_ptr;std::optional;std::function'
 
