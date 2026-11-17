@@ -86,8 +86,8 @@ std::vector<FeatureGroup> feature_groups(Eigen::Index dimension) {
 }
 
 template <class K>
-void fit_and_report(const std::string &function, const std::string &name, const Dataset &data,
-                    std::uint64_t seed, const K &kernel) {
+void fit_and_report(const std::string &function, const std::string &family, const std::string &name,
+                    const Dataset &data, std::uint64_t seed, const K &kernel) {
     GPROptions options;
     options.normalize_y = true;
     options.optimizer.max_iterations = 500;
@@ -110,7 +110,7 @@ void fit_and_report(const std::string &function, const std::string &name, const 
         converged = converged && result.converged();
     }
     const double initial_lml = model.log_marginal_likelihood(kernel.theta()).value;
-    std::cout << function << ',' << data.train_x.cols() << ',' << data.train_x.rows() << ','
+    std::cout << function << ',' << family << ',' << data.train_x.cols() << ',' << data.train_x.rows() << ','
               << data.test_x.rows() << ',' << seed << ',' << name << ',' << model.kernel().parameter_count()
               << ',' << rmse << ',' << std::sqrt(squared_error / total_variance) << ','
               << 1.0 - squared_error / total_variance << ',' << seconds << ',' << iterations << ','
@@ -124,41 +124,60 @@ void fit_and_report(const std::string &function, const std::string &name, const 
         std::cout << parameters[index];
     }
     std::cout << '\n' << std::flush;
-    std::cerr << function << " d=" << data.train_x.cols() << " n=" << data.train_x.rows() << " seed=" << seed
-              << ' ' << name << " R2=" << 1.0 - squared_error / total_variance << " seconds=" << seconds
-              << " converged=" << converged << '\n';
+    std::cerr << function << ' ' << family << " d=" << data.train_x.cols() << " n=" << data.train_x.rows()
+              << " seed=" << seed << ' ' << name << " R2=" << 1.0 - squared_error / total_variance
+              << " seconds=" << seconds << " converged=" << converged << '\n';
 }
 
+template <class Factory>
 void compare_models(Eigen::Index dimension, Eigen::Index train_count, Eigen::Index test_count,
-                    std::uint64_t seed, bool interactions) {
+                    std::uint64_t seed, bool interactions, const std::string &family, const Factory &radial) {
     const auto data = make_dataset(dimension, train_count, test_count, seed, interactions);
     const std::string function = interactions ? "interaction" : "additive";
     const auto groups = feature_groups(dimension);
-    auto component =
-        ConstantKernel({1.0 / static_cast<double>(groups.size()), 1e-5, 100.0}) * RBF({0.7, 0.1, 20.0});
+    auto component = ConstantKernel({1.0 / static_cast<double>(groups.size()), 1e-5, 100.0}) *
+                     radial(Parameter{0.7, 0.1, 20.0});
     auto additive = make_additive_kernel(groups, component) + WhiteKernel({0.001, 1e-8, 0.5});
-    fit_and_report(function, "additive", data, seed, additive);
+    fit_and_report(function, family, "additive", data, seed, additive);
     const double initial_scale = 0.7 * std::sqrt(static_cast<double>(groups.size()));
-    auto isotropic = ConstantKernel({1.0, 1e-5, 100.0}) * RBF({initial_scale, 0.1, 100.0}) +
+    auto isotropic = ConstantKernel({1.0, 1e-5, 100.0}) * radial(Parameter{initial_scale, 0.1, 100.0}) +
                      WhiteKernel({0.001, 1e-8, 0.5});
-    fit_and_report(function, "full_rbf", data, seed, isotropic);
+    fit_and_report(function, family, "full_iso", data, seed, isotropic);
     auto ard =
         ConstantKernel({1.0, 1e-5, 100.0}) *
-            RBF(std::vector<Parameter>(static_cast<std::size_t>(dimension), {initial_scale, 0.1, 100.0})) +
+            radial(std::vector<Parameter>(static_cast<std::size_t>(dimension), {initial_scale, 0.1, 100.0})) +
         WhiteKernel({0.001, 1e-8, 0.5});
-    fit_and_report(function, "full_ard", data, seed, ard);
+    fit_and_report(function, family, "full_ard", data, seed, ard);
 }
-} // namespace
+struct ExperimentOptions {
+    bool quick = false;
+    std::string kernel = "rbf";
+};
 
-int main(int argc, char **argv) try {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) -- argc guards argv access.
-    const bool quick = argc == 2 && std::string(argv[1]) == "--quick";
-    if (argc != 1 && !quick) {
-        throw std::invalid_argument("Usage: additive_experiment [--quick]");
+ExperimentOptions parse_options(int argc, char **argv) {
+    ExperimentOptions options;
+    for (int index = 1; index < argc; ++index) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) -- argc bounds argv access.
+        const std::string argument(argv[index]);
+        if (argument == "--quick") {
+            options.quick = true;
+        } else if (argument == "--kernel=rbf" || argument == "--kernel=matern15" ||
+                   argument == "--kernel=matern25") {
+            options.kernel = argument.substr(std::string("--kernel=").size());
+        } else {
+            throw std::invalid_argument(
+                "Usage: additive_experiment [--quick] [--kernel=rbf|matern15|matern25]");
+        }
     }
-    std::cout << std::setprecision(12)
-              << "function,dimension,train_count,test_count,seed,model,parameters,rmse,nrmse,r2,fit_seconds,"
-                 "iterations,evaluations,converged,initial_lml,lml,physical_parameters\n";
+    return options;
+}
+
+template <class Factory> void run_experiment(const ExperimentOptions &options, const Factory &radial) {
+    const bool quick = options.quick;
+    std::cout
+        << std::setprecision(12)
+        << "function,kernel,dimension,train_count,test_count,seed,model,parameters,rmse,nrmse,r2,fit_seconds,"
+           "iterations,evaluations,converged,initial_lml,lml,physical_parameters\n";
     const Eigen::Index test_count = quick ? 256 : 1024;
     const Eigen::Index control_train_count = quick ? 64 : 256;
     const std::vector<Eigen::Index> dimensions =
@@ -170,7 +189,7 @@ int main(int argc, char **argv) try {
     for (auto dimension : dimensions) {
         for (auto train_count : train_counts) {
             for (auto seed : seeds) {
-                compare_models(dimension, train_count, test_count, seed, false);
+                compare_models(dimension, train_count, test_count, seed, false, options.kernel, radial);
             }
         }
     }
@@ -179,8 +198,19 @@ int main(int argc, char **argv) try {
             continue;
         }
         for (auto seed : seeds) {
-            compare_models(dimension, control_train_count, test_count, seed, true);
+            compare_models(dimension, control_train_count, test_count, seed, true, options.kernel, radial);
         }
+    }
+}
+} // namespace
+
+int main(int argc, char **argv) try {
+    const auto options = parse_options(argc, argv);
+    if (options.kernel == "rbf") {
+        run_experiment(options, [](auto scales) { return RBF(std::move(scales)); });
+    } else {
+        const double nu = options.kernel == "matern15" ? 1.5 : 2.5;
+        run_experiment(options, [nu](auto scales) { return Matern(std::move(scales), nu); });
     }
     return 0;
 } catch (const std::exception &error) {
