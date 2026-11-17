@@ -11,6 +11,7 @@ using namespace super_gpr_experiments;
 
 struct Options {
     bool quick = false;
+    bool plain_matern = false;
     std::vector<std::uint64_t> seeds{5003, 6007, 7001};
 };
 Options parse_options(int argc, char **argv) {
@@ -20,6 +21,8 @@ Options parse_options(int argc, char **argv) {
         const std::string argument(argv[index]);
         if (argument == "--quick") {
             result.quick = true;
+        } else if (argument == "--plain-matern25") {
+            result.plain_matern = true;
         } else if (argument.compare(0, 7, "--seed=") == 0) {
             const auto value = argument.substr(7);
             std::size_t end = 0;
@@ -29,7 +32,8 @@ Options parse_options(int argc, char **argv) {
             }
             result.seeds = {seed};
         } else {
-            throw std::invalid_argument("Usage: sample_learning_curve [--quick] [--seed=integer]");
+            throw std::invalid_argument(
+                "Usage: sample_learning_curve [--quick] [--seed=integer] [--plain-matern25]");
         }
     }
     if (result.quick && result.seeds.size() != 1) {
@@ -135,7 +139,7 @@ void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, 
               << " converged=" << converged << '\n';
 }
 
-void run(std::uint64_t seed, bool quick) {
+void run(std::uint64_t seed, bool quick, bool plain_matern) {
     const Eigen::Index dimension = quick ? 20 : 80;
     const Eigen::Index max_count = quick ? 64 : 1024;
     const Eigen::Index test_count = quick ? 128 : 2048;
@@ -144,6 +148,14 @@ void run(std::uint64_t seed, bool quick) {
     const auto data = nested_dataset(dimension, max_count, test_count, seed);
     const auto training_checksum = checksum(data.train_x, data.train_y);
     const auto test_checksum = checksum(data.test_x, data.test_y);
+    if (plain_matern) {
+        const auto kernel = ConstantKernel({1.0, 1e-5, 100.0}) * Matern({1.0, 0.1, 100.0}, 2.5) +
+                            WhiteKernel({0.001, 1e-8, 0.5});
+        for (auto count : counts) {
+            evaluate("plain_matern25", seed, data, count, kernel, training_checksum, test_checksum);
+        }
+        return;
+    }
     const auto groups = feature_groups(dimension);
     const auto group_count = static_cast<double>(groups.size());
     const WhiteKernel noise({0.001, 1e-8, 0.5});
@@ -170,7 +182,7 @@ int main(int argc, char **argv) try {
                  "error,max_absolute_error,train_rmse,noise_std,fit_seconds,predict_seconds,iterations,"
                  "evaluations,converged,lml,training_pool_checksum,test_checksum,physical_parameters\n";
     for (auto seed : options.seeds) {
-        run(seed, options.quick);
+        run(seed, options.quick, options.plain_matern);
     }
     return 0;
 } catch (const std::exception &error) {

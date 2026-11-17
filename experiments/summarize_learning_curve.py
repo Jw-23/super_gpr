@@ -7,8 +7,12 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, stdev
 
-MODELS = ("independent", "shared_ard")
-LABELS = {"independent": "Independent", "shared_ard": "Shared ARD"}
+MODELS = ("independent", "shared_ard", "plain_matern25")
+LABELS = {
+    "independent": "Additive, independent",
+    "shared_ard": "Additive, shared ARD",
+    "plain_matern25": "Plain Matérn 2.5",
+}
 
 
 def load_records(paths):
@@ -29,7 +33,7 @@ def load_records(paths):
         unique.add(key)
         metadata[(dimension, seed)].add((row["test_count"], row["training_pool_checksum"], row["test_checksum"]))
         grids[(dimension, seed, model)].add(count)
-        expected = dimension // 2 + 1 if model == "independent" else 6
+        expected = {"independent": dimension // 2 + 1, "shared_ard": 6, "plain_matern25": 3}[model]
         assert int(row["parameters"]) == expected
         values = [float(value) for value in row["physical_parameters"].split(";")]
         assert len(values) == expected and all(math.isfinite(value) and value > 0 for value in values)
@@ -40,8 +44,9 @@ def load_records(paths):
         assert 0 <= float(row["p95_absolute_error"]) <= float(row["max_absolute_error"]) + 1e-8
     for key, values in metadata.items():
         assert len(values) == 1, f"Dataset changed across sample counts or models: {key}"
-    for (dimension, seed, model), counts in grids.items():
-        assert counts == grids[(dimension, seed, MODELS[1] if model == MODELS[0] else MODELS[0])]
+    present = {row["model"] for row in rows}
+    for dimension, seed in metadata:
+        assert all((dimension, seed, model) in grids for model in present), "Missing model for a seed"
     all_grids = list(grids.values())
     assert all(grid == all_grids[0] for grid in all_grids), "Seeds use different sample counts"
     return rows
@@ -98,7 +103,8 @@ def plot(rows, path):
 
     counts = sorted({int(row["train_count"]) for row in rows})
     figure, axes = plt.subplots(1, 2, figsize=(10.5, 4.2), layout="constrained")
-    for model, color in zip(MODELS, ("#4169a1", "#d17432")):
+    present = [model for model in MODELS if any(row["model"] == model for row in rows)]
+    for model, color in zip(present, ("#4169a1", "#d17432", "#389269")):
         for axis, metric, ylabel in zip(axes, ("r2", "rmse"), ("Test R² (higher is better)", "Test RMSE (lower is better)")):
             values = [[float(row[metric]) for row in rows if row["model"] == model and int(row["train_count"]) == count]
                       for count in counts]
