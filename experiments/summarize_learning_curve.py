@@ -111,7 +111,11 @@ def plot(rows, path):
             axis.set_ylabel(ylabel)
             axis.grid(alpha=0.2)
             axis.legend(frameon=False)
-    figure.suptitle(f"{rows[0]['dimension']}-dimensional additive GP: fixed test sets, nested training sets", fontsize=12)
+    seed_count = len({row["seed"] for row in rows})
+    figure.suptitle(
+        f"{rows[0]['dimension']}-dimensional additive GP: fixed test sets, nested training sets\n"
+        f"Mean ± sample SD over {seed_count} seeds; {rows[0]['test_count']} fixed test points per seed",
+        fontsize=12)
     figure.savefig(path, dpi=180)
     plt.close(figure)
 

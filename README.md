@@ -272,6 +272,8 @@ LML(theta) - 0.5 * sum_i ((theta_i - prior.mean_i) / prior.standard_deviation_i)
 有先验时，`optimization_results()` 的目标值是负的 MAP 目标。
 训练集内选择与新种子消融验证见
 [Additive GP 诊断报告](experiments/ADDITIVE_DIAGNOSIS.md)。
+训练样本增加到 1024 时的准确性及耗时见
+[样本数学习曲线](experiments/SAMPLE_LEARNING_CURVE.md)。
 
 ## GPR 的数值约定
 

@@ -11,6 +11,8 @@
 针对高维预测不准的后续诊断、共享 ARD 和收缩先验改进，见
 [ADDITIVE_DIAGNOSIS.md](ADDITIVE_DIAGNOSIS.md)。该实验使用新种子，并在训练集内选择模型，
 不替换本文件中原实验的数据和结果。
+增加到 512、1024 个训练样本的固定测试集学习曲线见
+[SAMPLE_LEARNING_CURVE.md](SAMPLE_LEARNING_CURVE.md)。
 
 ## 复现
 
