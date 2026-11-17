@@ -1,0 +1,2 @@
+add_executable(additive_experiment additive_prediction.cpp)
+target_link_libraries(additive_experiment PRIVATE project_core project_options project_warnings)

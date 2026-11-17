@@ -155,6 +155,74 @@ auto combined = linear * RBF{};
 自定义核须对称并适合作为协方差；所有梯度回调必须完整写入输出。`Point` 和 `Gradient`
 是 Eigen 视图，不应保存到调用范围之外。`Matern(nu=0.5)` 在重合点不可微，输入导数取零。
 
+## Additive GP：变量组上的核相加
+
+`super_gpr/additive.hpp` 提供 `SubspaceKernel<K>` 和 `AdditiveKernel<K>`。
+实现的是一个联合 GP 的加性核：
+
+```text
+k(x, x') = sum_j k_j(x[S_j], x'[S_j])
+```
+
+每个子核有自己的超参数，但训练标签只有完整函数的一个标量；所有参数通过同一个
+LML 联合优化。不会为各组分别拟合一份完整 y。变量分组由调用方给定，不自动学习分组。
+
+```cpp
+#include <super_gpr/additive.hpp>
+
+using namespace super_gpr;
+std::vector<FeatureGroup> groups{{0, 1}, {2, 3}};
+auto additive = make_additive_kernel(
+    groups, ConstantKernel({0.5, 1e-5, 100.0}) * RBF({0.7, 0.1, 20.0}));
+GPROptions options;
+options.normalize_y = true;
+auto gp = make_additive_gp(additive, {0.001, 1e-8, 0.5}, options);
+gp.fit(x, y); // x has four columns; y contains only the total scalar target.
+auto total = gp.predict(query, true);
+
+// Use fitted component parameters for conditional component predictions.
+const auto &components = gp.kernel().left().components();
+auto first = gp.predict_component(components[0], query, true);
+auto second = gp.predict_component(components[1], query, true);
+auto cross = gp.component_cross_covariance(components[0], components[1], query);
+// total.mean = first.mean + second.mean + gp.mean_offset() per row.
+```
+
+`AdditiveKernel<K>` 保留静态子核类型，支持运行时指定组数；`SubspaceKernel<K>` 支持
+非连续、重排及组间重叠的坐标，但同一个组内不能重复索引。连续组通过 Eigen 视图访问，
+非连续组收集到局部向量。输入导数散射回原始维度，组间重叠时累加导数。
+
+原有组合子仍然适用，例如：
+
+```cpp
+auto explicit_sum = SubspaceKernel<RBF>(RBF{}, {0, 1})
+                  + SubspaceKernel<Matern>(Matern({}, 2.5), {2, 3});
+auto hybrid = additive + ConstantKernel({0.01, 1e-6, 1.0}) * RBF({2.0, 0.1, 100.0})
+             + WhiteKernel({0.001, 1e-8, 0.5});
+GaussianProcessRegressor<decltype(hybrid)> hybrid_gp(hybrid, options);
+```
+
+上例的全局核用于建模跨组交互，其幅度也参与 LML 优化。`make_additive_gp` 是普通
+`GaussianProcessRegressor<AddKernel<AdditiveKernel<K>, WhiteKernel>>` 的构造便捷函数，
+没有额外的训练算法。需要每组不同初值时，直接构造
+`AdditiveKernel<K>(std::vector<SubspaceKernel<K>>{...})`。
+
+各分量的后验均值使用共享系数 `alpha = K_total^-1 y_normalized`。
+`predict_component` 返回不带全局均值偏置的分量贡献，恢复原始目标的尺度；
+`mean_offset()` 返回全局均值。该通用接口要求传入已拟合总核中的实际分量。
+`component_cross_covariance(first, second, X)` 仅用于先验独立的两个不同分量：
+
+```text
+Cov(g_i(X*), g_j(X*) | y) = -k_i(X*, X) K_total^-1 k_j(X, X*)
+```
+
+完整预测方差不能直接相加各分量方差，还必须加入交叉协方差及 WhiteKernel 的预测噪声。
+分量贡献取决于核先验；没有中心化约束时，不保证分量的物理可辨识性。
+加性结构降低的是函数建模的有效维度，精确联合拟合仍为 O(n^3)。
+
+理论背景：[Kandasamy et al., ICML 2015](https://proceedings.mlr.press/v37/kandasamy15.html)。
+高维预测实验与原始数据见 [experiments/README.md](experiments/README.md)。
+
 ## GPR 的数值约定
 
 使用 Cholesky 分解计算后验和 LML。每次 LML 梯度求值将核导数直接与

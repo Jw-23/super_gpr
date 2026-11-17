@@ -47,6 +47,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
 option(PROJECT_ENABLE_TESTING "Build tests with GoogleTest" ON)
 option(PROJECT_ENABLE_BENCHMARKS "Build benchmarks with Google Benchmark" ON)
+option(SUPER_GPR_BUILD_EXPERIMENTS "Build reproducible prediction experiments" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(ProjectOptions)
@@ -64,10 +65,14 @@ if(PROJECT_ENABLE_BENCHMARKS)
   add_subdirectory(benchmarks)
 endif()
 
+if(SUPER_GPR_BUILD_EXPERIMENTS)
+  add_subdirectory(experiments)
+endif()
+
 find_program(PROJECT_CLANG_TIDY_EXECUTABLE NAMES clang-tidy)
 if(PROJECT_CLANG_TIDY_EXECUTABLE)
   set(PROJECT_TIDY_SOURCES)
-  foreach(target project_core project_app project_tests project_benchmarks sklearn_reference_probe)
+  foreach(target project_core project_app project_tests project_benchmarks sklearn_reference_probe additive_experiment)
     if(TARGET ${target})
       get_target_property(target_sources ${target} SOURCES)
       get_target_property(target_source_dir ${target} SOURCE_DIR)
