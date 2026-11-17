@@ -1,9 +1,10 @@
 #pragma once
 
-#include <super_gpr/optimizer.hpp>
 #include <Eigen/Cholesky>
 #include <cstdint>
 #include <random>
+#include <super_gpr/kernel.hpp>
+#include <super_gpr/optimizer.hpp>
 
 namespace super_gpr {
 
@@ -38,18 +39,22 @@ struct PosteriorPoint {
 template <class Kernel> class GaussianProcessRegressor {
     using K = std::decay_t<Kernel>;
     static_assert(IsKernel<K>::value, "K must satisfy the Kernel interface");
-    using Cholesky = Eigen::LLT<Matrix>;
+    using Cholesky = Eigen::LLT<Eigen::MatrixXd>;
+
 public:
     explicit GaussianProcessRegressor(K kernel, GPROptions options = {})
         : kernel_(std::move(kernel)), options_(std::move(options)) {}
 
-    void fit(const Matrix& x, const Vector& y) { fit(x, Matrix(y)); }
-    void fit(const Matrix& x, const Matrix& y) {
+    void fit(const Matrix &x, const Vector &y) { fit(x, Matrix(y)); }
+    void fit(const Matrix &x, const Matrix &y) {
         if (x.rows() == 0 || x.cols() == 0 || y.cols() == 0 || x.rows() != y.rows()) {
             throw std::invalid_argument("Training data must be nonempty with matching sample counts");
         }
         if (options_.sample_noise.size() != 0 && options_.sample_noise.size() != x.rows()) {
             throw std::invalid_argument("sample_noise must have one variance per training observation");
+        }
+        if (options_.optimizer_restarts < 0) {
+            throw std::invalid_argument("optimizer_restarts must be nonnegative");
         }
         fitted_ = false;
         x_ = x;
@@ -65,20 +70,26 @@ public:
             }
         }
         optimization_results_.clear();
-        if (options_.optimize && kernel_.parameter_count() > 0) { optimize_kernel(); }
+        if (options_.optimize && kernel_.parameter_count() > 0) {
+            optimize_kernel();
+        }
         Matrix matrix = training_covariance(kernel_);
         cholesky_.compute(matrix);
         if (cholesky_.info() != Eigen::Success) {
-            throw std::runtime_error("Training covariance is not positive definite; check the kernel or increase alpha");
+            throw std::runtime_error(
+                "Training covariance is not positive definite; check the kernel or increase alpha");
         }
         weights_ = cholesky_.solve(y_);
         likelihood_ = likelihood_value(cholesky_, weights_);
         fitted_ = true;
     }
 
-    const K& kernel() const { return kernel_; }
-    double log_marginal_likelihood() const { require_fitted(); return likelihood_; }
-    const std::vector<OptimizationResult>& optimization_results() const { return optimization_results_; }
+    const K &kernel() const { return kernel_; }
+    double log_marginal_likelihood() const {
+        require_fitted();
+        return likelihood_;
+    }
+    const std::vector<OptimizationResult> &optimization_results() const { return optimization_results_; }
 
     Likelihood log_marginal_likelihood(Point theta) const {
         require_fitted();
@@ -87,8 +98,10 @@ public:
         return evaluate_likelihood(candidate);
     }
 
-    Prediction predict(const Matrix& x, bool return_covariance = false) const {
-        if (fitted_ && x.cols() != x_.cols()) { throw std::invalid_argument("Wrong prediction feature count"); }
+    Prediction predict(const Matrix &x, bool return_covariance = false) const {
+        if (fitted_ && x.cols() != x_.cols()) {
+            throw std::invalid_argument("Wrong prediction feature count");
+        }
         const Eigen::Index outputs = fitted_ ? y_.cols() : 1;
         Prediction result{Matrix::Zero(x.rows(), outputs), Matrix(x.rows(), outputs), {}};
         Matrix solved;
@@ -106,7 +119,9 @@ public:
         Matrix posterior;
         if (return_covariance) {
             posterior = covariance(kernel_, x);
-            if (fitted_) { posterior.noalias() -= solved.transpose() * solved; }
+            if (fitted_) {
+                posterior.noalias() -= solved.transpose() * solved;
+            }
             posterior.diagonal() = variance;
         }
         for (Eigen::Index output = 0; output < outputs; ++output) {
@@ -114,7 +129,9 @@ public:
             const double mean = fitted_ ? mean_[output] : 0.0;
             result.mean.col(output) = result.mean.col(output).array() * scale + mean;
             result.standard_deviation.col(output) = variance.array().sqrt() * scale;
-            if (return_covariance) { result.covariance.emplace_back(posterior * (scale * scale)); }
+            if (return_covariance) {
+                result.covariance.emplace_back(posterior * (scale * scale));
+            }
         }
         return result;
     }
@@ -144,38 +161,47 @@ public:
         kernel_.diagonal_gradient(point, scratch);
         result.standard_deviation_gradient = Vector::Zero(point.size());
         if (stddev > 0.0) {
-            result.standard_deviation_gradient = (scratch - 2.0 * jacobian.transpose() * solved) * (scale_[0] / (2.0 * stddev));
+            result.standard_deviation_gradient =
+                (scratch - 2.0 * jacobian.transpose() * solved) * (scale_[0] / (2.0 * stddev));
         }
         return result;
     }
 
 private:
     void require_fitted() const {
-        if (!fitted_) { throw std::logic_error("Fit the Gaussian process first"); }
+        if (!fitted_) {
+            throw std::logic_error("Fit the Gaussian process first");
+        }
     }
-    Matrix training_covariance(const K& kernel) const {
+    Matrix training_covariance(const K &kernel) const {
         Matrix matrix = covariance(kernel, x_);
-        if (options_.sample_noise.size() == 0) { matrix.diagonal().array() += options_.alpha; }
-        else { matrix.diagonal() += options_.sample_noise; }
+        if (options_.sample_noise.size() == 0) {
+            matrix.diagonal().array() += options_.alpha;
+        } else {
+            matrix.diagonal() += options_.sample_noise;
+        }
         return matrix;
     }
-    double likelihood_value(const Cholesky& factor, const Matrix& weights) const {
-        const Matrix lower = factor.matrixL();
+    double likelihood_value(const Cholesky &factor, const Matrix &weights) const {
         const auto outputs = static_cast<double>(y_.cols());
-        return -0.5 * (y_.array() * weights.array()).sum() - outputs * lower.diagonal().array().log().sum() -
+        return -0.5 * (y_.array() * weights.array()).sum() -
+               outputs * factor.matrixLLT().diagonal().array().log().sum() -
                0.5 * static_cast<double>(y_.rows()) * outputs * std::log(2.0 * std::acos(-1.0));
     }
-    Likelihood evaluate_likelihood(const K& kernel) const {
+    Likelihood evaluate_likelihood(const K &kernel) const {
         const Matrix matrix = training_covariance(kernel);
         const Cholesky factor(matrix);
         Likelihood result;
         result.gradient = Vector::Zero(kernel.parameter_count());
-        if (factor.info() != Eigen::Success) { return result; }
+        if (factor.info() != Eigen::Success) {
+            return result;
+        }
         const Matrix weights = factor.solve(y_);
         result.value = likelihood_value(factor, weights);
         // Contract one derivative at a time, avoiding an O(n^2 * p) tensor.
-        const Matrix contraction = weights * weights.transpose() -
-                                   static_cast<double>(y_.cols()) * factor.solve(Matrix::Identity(x_.rows(), x_.rows()));
+        const Matrix contraction =
+            weights * weights.transpose() -
+            static_cast<double>(y_.cols()) * factor.solve(Matrix::Identity(x_.rows(), x_.rows()));
         Vector scratch(kernel.parameter_count());
         for (Eigen::Index row = 0; row < x_.rows(); ++row) {
             for (Eigen::Index col = 0; col <= row; ++col) {
@@ -191,7 +217,7 @@ private:
             throw std::invalid_argument("Optimizer restarts require finite bounds");
         }
         K candidate = kernel_;
-        auto objective = [&](const Vector& theta, Vector& gradient) {
+        auto objective = [&](const Vector &theta, Vector &gradient) {
             candidate.set_theta(theta);
             const auto likelihood = evaluate_likelihood(candidate);
             gradient = -likelihood.gradient;
@@ -205,11 +231,15 @@ private:
         for (int restart = 0; restart <= options_.optimizer_restarts; ++restart) {
             if (restart > 0) {
                 for (Eigen::Index index = 0; index < initial.size(); ++index) {
-                    initial[index] = bounds.lower[index] + uniform(random) * (bounds.upper[index] - bounds.lower[index]);
+                    initial[index] =
+                        bounds.lower[index] + uniform(random) * (bounds.upper[index] - bounds.lower[index]);
                 }
             }
             auto result = minimize_lbfgsb(objective, initial, bounds, options_.optimizer);
-            if (result.value < best) { best = result.value; best_theta = result.x; }
+            if (result.value < best) {
+                best = result.value;
+                best_theta = result.x;
+            }
             optimization_results_.push_back(std::move(result));
         }
         kernel_.set_theta(best_theta);

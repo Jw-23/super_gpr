@@ -1,5 +1,5 @@
-#include <super_gpr/acquisition.hpp>
 #include <gtest/gtest.h>
+#include <super_gpr/acquisition.hpp>
 
 namespace {
 using namespace super_gpr;
@@ -15,12 +15,17 @@ Vector training_y() {
     return y;
 }
 std::vector<BoxedKernel> kernels() {
-    return {BoxedKernel(RBF({0.7})), BoxedKernel(RBF(std::vector<Parameter>{{0.7}, {1.3}})),
-            BoxedKernel(Matern({0.7}, 0.5)), BoxedKernel(Matern({0.7}, 1.5)),
+    return {BoxedKernel(RBF({0.7})),
+            BoxedKernel(RBF(std::vector<Parameter>{{0.7}, {1.3}})),
+            BoxedKernel(Matern({0.7}, 0.5)),
+            BoxedKernel(Matern({0.7}, 1.5)),
             BoxedKernel(Matern(std::vector<Parameter>{{0.7}, {1.3}}, 2.5)),
             BoxedKernel(Matern({0.7}, std::numeric_limits<double>::infinity())),
-            BoxedKernel(RationalQuadratic({0.8}, {1.4})), BoxedKernel(ExpSineSquared({0.8}, {1.7})),
-            BoxedKernel(DotProduct({0.6})), BoxedKernel(ConstantKernel({1.2})), BoxedKernel(WhiteKernel({0.2})),
+            BoxedKernel(RationalQuadratic({0.8}, {1.4})),
+            BoxedKernel(ExpSineSquared({0.8}, {1.7})),
+            BoxedKernel(DotProduct({0.6})),
+            BoxedKernel(ConstantKernel({1.2})),
+            BoxedKernel(WhiteKernel({0.2})),
             BoxedKernel(1.7 * (RBF{} + DotProduct{}) * (ConstantKernel{} + WhiteKernel{}))};
 }
 
@@ -28,9 +33,12 @@ TEST(Kernel, OperatorsPreserveConcreteTemplateTypes) {
     auto sum = RBF{} + WhiteKernel{};
     auto product = ConstantKernel{} * RBF{};
     auto nested = (RBF{} + DotProduct{}) * WhiteKernel{};
-    static_assert(std::is_same<decltype(sum), AddKernel<RBF, WhiteKernel>>::value, "Sum preserves operand types");
-    static_assert(std::is_same<decltype(product), Multiple<ConstantKernel, RBF>>::value, "Product preserves operand types");
-    static_assert(std::is_same<decltype(nested), Multiple<AddKernel<RBF, DotProduct>, WhiteKernel>>::value, "Nested types are preserved");
+    static_assert(std::is_same<decltype(sum), AddKernel<RBF, WhiteKernel>>::value,
+                  "Sum preserves operand types");
+    static_assert(std::is_same<decltype(product), Multiple<ConstantKernel, RBF>>::value,
+                  "Product preserves operand types");
+    static_assert(std::is_same<decltype(nested), Multiple<AddKernel<RBF, DotProduct>, WhiteKernel>>::value,
+                  "Nested types are preserved");
     EXPECT_EQ(sum.parameter_count(), 2);
     EXPECT_EQ(product.parameter_count(), 2);
     EXPECT_EQ(nested.parameter_count(), 3);
@@ -64,7 +72,7 @@ TEST(Kernel, AnalyticInputAndDiagonalDerivatives) {
     Vector x = (Vector(2) << 0.3, -0.4).finished();
     const Vector y = (Vector(2) << 1.2, 0.6).finished();
     constexpr double step = 1e-6;
-    for (const auto& kernel : kernels()) {
+    for (const auto &kernel : kernels()) {
         Vector input(2);
         Vector diagonal(2);
         kernel.input_gradient(x, y, input);
@@ -103,6 +111,12 @@ TEST(Kernel, FixedParametersAndScalars) {
     fixed.set_theta(Vector{});
 }
 
+TEST(Kernel, RejectsMismatchedARDFeatureCounts) {
+    const RBF kernel(std::vector<Parameter>{{0.7}, {1.3}});
+    const Matrix x = Matrix::Zero(2, 3);
+    EXPECT_THROW(covariance(kernel, x), std::invalid_argument);
+}
+
 TEST(Kernel, BoxedCopiesHaveIndependentParameters) {
     const BoxedKernel original(RBF{} + WhiteKernel{});
     BoxedKernel copied = original;
@@ -112,10 +126,12 @@ TEST(Kernel, BoxedCopiesHaveIndependentParameters) {
 }
 
 TEST(Kernel, UserSuppliedAnalyticCallbacksCompose) {
-    auto kernel = make_analytic_kernel(Vector::Constant(1, std::log(2.0)),
-        Bounds{Vector::Constant(1, -5.0), Vector::Constant(1, 5.0)},
+    auto kernel = make_analytic_kernel(
+        Vector::Constant(1, std::log(2.0)), Bounds{Vector::Constant(1, -5.0), Vector::Constant(1, 5.0)},
         [](Point x, Point y, bool /*same*/, Point theta) { return std::exp(theta[0]) * x.dot(y); },
-        [](Point x, Point y, bool /*same*/, Point theta, Gradient out) { out[0] = std::exp(theta[0]) * x.dot(y); },
+        [](Point x, Point y, bool /*same*/, Point theta, Gradient out) {
+            out[0] = std::exp(theta[0]) * x.dot(y);
+        },
         [](Point /*x*/, Point y, Point theta, Gradient out) { out = std::exp(theta[0]) * y; },
         [](Point x, Point theta, Gradient out) { out = 2.0 * std::exp(theta[0]) * x; });
     static_assert(IsKernel<decltype(kernel)>::value, "Analytic callbacks implement Kernel");
@@ -129,7 +145,7 @@ TEST(Kernel, UserSuppliedAnalyticCallbacksCompose) {
 }
 
 TEST(Optimizer, BoundsAndFixedCoordinates) {
-    const Objective quadratic = [](const Vector& x, Vector& gradient) {
+    const Objective quadratic = [](const Vector &x, Vector &gradient) {
         gradient = 2.0 * (x.array() - 3.0).matrix();
         return (x.array() - 3.0).square().sum();
     };
@@ -143,7 +159,7 @@ TEST(Optimizer, BoundsAndFixedCoordinates) {
 }
 
 TEST(Optimizer, RosenbrockAndInfiniteBounds) {
-    const Objective function = [](const Vector& x, Vector& gradient) {
+    const Objective function = [](const Vector &x, Vector &gradient) {
         const double a = 1.0 - x[0];
         const double b = x[1] - x[0] * x[0];
         gradient.resize(2);
@@ -163,15 +179,17 @@ TEST(Optimizer, ReportsIterationLimitAndPropagatesCallbackErrors) {
     options.max_iterations = 1;
     options.function_tolerance = 0.0;
     const Bounds bounds{Vector::Constant(2, -10.0), Vector::Constant(2, 10.0)};
-    const Objective function = [](const Vector& x, Vector& gradient) {
+    const Objective function = [](const Vector &x, Vector &gradient) {
         gradient = 2.0 * x;
         gradient[1] *= 10.0;
         return x[0] * x[0] + 10.0 * x[1] * x[1];
     };
     const auto result = minimize_lbfgsb(function, Vector::Constant(2, 2.0), bounds, options);
     EXPECT_EQ(result.status, OptimizationStatus::IterationLimit);
-    EXPECT_THROW(minimize_lbfgsb([](const Vector&, Vector&) -> double { throw std::runtime_error("callback error"); },
-                                Vector::Ones(2), bounds), std::runtime_error);
+    EXPECT_THROW(minimize_lbfgsb(
+                     [](const Vector &, Vector &) -> double { throw std::runtime_error("callback error"); },
+                     Vector::Ones(2), bounds),
+                 std::runtime_error);
 }
 
 TEST(GPR, LMLGradientAndPosteriorInputDerivatives) {
@@ -238,13 +256,16 @@ TEST(GPR, MultiOutputNoiseAndCovarianceConsistency) {
     EXPECT_TRUE(prediction.mean.col(1).isApprox((3.0 * prediction.mean.col(0).array() + 7.0).matrix()));
     EXPECT_TRUE(prediction.standard_deviation.col(1).isApprox(3.0 * prediction.standard_deviation.col(0)));
     EXPECT_TRUE(prediction.covariance[1].isApprox(9.0 * prediction.covariance[0]));
-    EXPECT_TRUE(prediction.covariance[0].diagonal().isApprox(prediction.standard_deviation.col(0).array().square().matrix()));
+    EXPECT_TRUE(prediction.covariance[0].diagonal().isApprox(
+        prediction.standard_deviation.col(0).array().square().matrix()));
     const Vector theta = model.kernel().theta();
     const auto likelihood = model.log_marginal_likelihood(theta);
     const double step = 1e-6;
     EXPECT_NEAR(likelihood.gradient[0],
-        (model.log_marginal_likelihood(theta.array() + step).value -
-         model.log_marginal_likelihood(theta.array() - step).value) / (2.0 * step), 1e-7);
+                (model.log_marginal_likelihood(theta.array() + step).value -
+                 model.log_marginal_likelihood(theta.array() - step).value) /
+                    (2.0 * step),
+                1e-7);
 }
 
 TEST(GPR, PriorConstantTargetsAndNumericalFailures) {
@@ -276,16 +297,25 @@ TEST(Acquisition, ValuesAndPartialDerivatives) {
     EXPECT_DOUBLE_EQ(lcb.evaluate(1.0, 0.5).value, 0.0);
     EXPECT_DOUBLE_EQ(ucb.evaluate(1.0, 0.5).value, 2.0);
     constexpr double step = 1e-6;
-    for (const AcquisitionFunction* function : std::vector<const AcquisitionFunction*>{&mean, &lcb, &ucb, &ei, &pi}) {
+    for (const AcquisitionFunction *function :
+         std::vector<const AcquisitionFunction *>{&mean, &lcb, &ucb, &ei, &pi}) {
         const auto value = function->evaluate(0.2, 0.4);
         EXPECT_NEAR(value.mean_derivative,
-            (function->evaluate(0.2 + step, 0.4).value - function->evaluate(0.2 - step, 0.4).value) / (2.0 * step), 1e-8);
+                    (function->evaluate(0.2 + step, 0.4).value - function->evaluate(0.2 - step, 0.4).value) /
+                        (2.0 * step),
+                    1e-8);
         EXPECT_NEAR(value.deviation_derivative,
-            (function->evaluate(0.2, 0.4 + step).value - function->evaluate(0.2, 0.4 - step).value) / (2.0 * step), 1e-8);
+                    (function->evaluate(0.2, 0.4 + step).value - function->evaluate(0.2, 0.4 - step).value) /
+                        (2.0 * step),
+                    1e-8);
     }
     EXPECT_DOUBLE_EQ(ei.evaluate(0.1, 0.0).value, 0.19);
     EXPECT_DOUBLE_EQ(pi.evaluate(0.1, 0.0).value, 1.0);
     EXPECT_DOUBLE_EQ(PI(0.0).evaluate(0.0, 0.0).value, 0.0);
+    const auto tail = PI(1.0).evaluate(0.0, std::numeric_limits<double>::min());
+    EXPECT_DOUBLE_EQ(tail.value, 1.0);
+    EXPECT_DOUBLE_EQ(tail.mean_derivative, 0.0);
+    EXPECT_DOUBLE_EQ(tail.deviation_derivative, 0.0);
 }
 
 TEST(Acquisition, OptimizationMatchesDenseGridAndNativeSign) {
@@ -302,18 +332,21 @@ TEST(Acquisition, OptimizationMatchesDenseGridAndNativeSign) {
     const LCB lcb;
     const PI pi(y.minCoeff(), 0.01);
     const ConservativeUCB ucb;
-    for (const AcquisitionFunction* function : std::vector<const AcquisitionFunction*>{&mean, &ei, &lcb, &pi, &ucb}) {
+    for (const AcquisitionFunction *function :
+         std::vector<const AcquisitionFunction *>{&mean, &ei, &lcb, &pi, &ucb}) {
         Matrix starts(17, 1);
         starts.col(0) = Vector::LinSpaced(17, -2.0, 2.0);
         const auto result = optimize_acquisition(model, *function, starts, bounds);
         const auto posterior = model.predict_with_gradients(result.x);
-        EXPECT_NEAR(result.value, function->evaluate(posterior.mean, posterior.standard_deviation).value, 1e-12);
+        EXPECT_NEAR(result.value, function->evaluate(posterior.mean, posterior.standard_deviation).value,
+                    1e-12);
         Matrix grid(2001, 1);
         grid.col(0) = Vector::LinSpaced(2001, -2.0, 2.0);
         const auto prediction = model.predict(grid);
         double best = function->maximize() ? -1e100 : 1e100;
         for (Eigen::Index row = 0; row < grid.rows(); ++row) {
-            const double value = function->evaluate(prediction.mean(row, 0), prediction.standard_deviation(row, 0)).value;
+            const double value =
+                function->evaluate(prediction.mean(row, 0), prediction.standard_deviation(row, 0)).value;
             best = function->maximize() ? std::max(best, value) : std::min(best, value);
         }
         EXPECT_LE((result.value - best) * (function->maximize() ? -1.0 : 1.0), 1e-5);

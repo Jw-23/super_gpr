@@ -1,7 +1,7 @@
 #pragma once
 
-#include <super_gpr/kernel.hpp>
 #include <functional>
+#include <super_gpr/types.hpp>
 
 namespace super_gpr {
 
@@ -24,13 +24,14 @@ struct OptimizationResult {
     OptimizationStatus status = OptimizationStatus::ProjectedGradient;
 
     bool converged() const {
-        return status == OptimizationStatus::ProjectedGradient || status == OptimizationStatus::FunctionTolerance;
+        return status == OptimizationStatus::ProjectedGradient ||
+               status == OptimizationStatus::FunctionTolerance;
     }
 };
 
 // Minimize f(x). The callback must write df/dx into gradient.
-using Objective = std::function<double(const Vector&, Vector&)>;
-OptimizationResult minimize_lbfgsb(const Objective& objective, Vector initial, const Bounds& bounds,
-                                   const LBFGSBOptions& options = {});
+using Objective = std::function<double(const Vector &, Vector &)>;
+OptimizationResult minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
+                                   const LBFGSBOptions &options = {});
 
 } // namespace super_gpr

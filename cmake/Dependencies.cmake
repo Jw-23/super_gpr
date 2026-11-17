@@ -9,20 +9,6 @@ else()
   set(PROJECT_BENCHMARK_VERSION 1.9.5)
 endif()
 
-set(PROJECT_SPDLOG_VERSION 1.17.0)
-set(PROJECT_FMT_VERSION 12.1.0)
-set(PROJECT_EIGEN_VERSION 3.4.0)
-
-message(
-  STATUS
-  "Dependency compatibility: C++${CMAKE_CXX_STANDARD}, "
-  "GoogleTest ${PROJECT_GOOGLETEST_VERSION}, "
-  "Benchmark ${PROJECT_BENCHMARK_VERSION}, "
-  "spdlog ${PROJECT_SPDLOG_VERSION}, "
-  "fmt ${PROJECT_FMT_VERSION}, "
-  "Eigen ${PROJECT_EIGEN_VERSION}"
-)
-
 if(PROJECT_ENABLE_TESTING)
 
   CPMAddPackage(
@@ -42,40 +28,12 @@ if(PROJECT_ENABLE_BENCHMARKS)
   )
 endif()
 
-if(PROJECT_ENABLE_FMT)
-  CPMAddPackage(
-    NAME fmt
-    GITHUB_REPOSITORY fmtlib/fmt
-    VERSION ${PROJECT_FMT_VERSION}
-    GIT_TAG ${PROJECT_FMT_VERSION}
-    OPTIONS "FMT_TEST OFF" "FMT_DOC OFF" "FMT_INSTALL OFF"
-  )
-endif()
-
-if(PROJECT_ENABLE_SPDLOG)
-  if(PROJECT_ENABLE_FMT)
-    set(PROJECT_SPDLOG_FMT_OPTION "SPDLOG_FMT_EXTERNAL ON")
-  else()
-    set(PROJECT_SPDLOG_FMT_OPTION "SPDLOG_FMT_EXTERNAL OFF")
-  endif()
-
-  CPMAddPackage(
-    NAME spdlog
-    GITHUB_REPOSITORY gabime/spdlog
-    VERSION ${PROJECT_SPDLOG_VERSION}
-    OPTIONS
-      "SPDLOG_BUILD_EXAMPLE OFF"
-      "SPDLOG_BUILD_TESTS OFF"
-      "SPDLOG_INSTALL OFF"
-      "${PROJECT_SPDLOG_FMT_OPTION}"
-  )
-endif()
-
 find_package(Eigen3 3.4 QUIET NO_MODULE)
 if(NOT TARGET Eigen3::Eigen)
   CPMAddPackage(
     NAME eigen
     URL https://github.com/eigen-mirror/eigen/archive/refs/tags/3.4.0.tar.gz
+    URL_HASH SHA256=8586084f71f9bde545ee7fa6d00288b264a2b7ac3607b974e54d13e7162c1c72
     DOWNLOAD_ONLY YES
   )
   add_library(project_eigen INTERFACE)
@@ -86,6 +44,7 @@ endif()
 CPMAddPackage(
   NAME lbfgspp
   URL https://github.com/yixuan/LBFGSpp/archive/c524a407fb85b74807f53de5a3ca2ddbcc164e54.tar.gz
+  URL_HASH SHA256=8fbb7037c4e0bf0d83ced74463092154038bc0bbb43f77fe38f2bc7c3414c2d8
   DOWNLOAD_ONLY YES
 )
 add_library(project_lbfgspp INTERFACE)

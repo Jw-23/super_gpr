@@ -1,25 +1,27 @@
-#include <super_gpr/optimizer.hpp>
 #include <LBFGSB.h>
 #include <cmath>
 #include <exception>
 #include <limits>
+#include <stdexcept>
+#include <super_gpr/optimizer.hpp>
 #include <utility>
 #include <vector>
 
 namespace super_gpr {
 namespace {
-std::vector<Eigen::Index> active_coordinates(const Bounds& bounds) {
+std::vector<Eigen::Index> active_coordinates(const Bounds &bounds) {
     std::vector<Eigen::Index> active;
     for (Eigen::Index axis = 0; axis < bounds.lower.size(); ++axis) {
-        if (bounds.lower[axis] != bounds.upper[axis]) { active.push_back(axis); }
+        if (bounds.lower[axis] != bounds.upper[axis]) {
+            active.push_back(axis);
+        }
     }
     return active;
 }
 } // namespace
 
-
-OptimizationResult minimize_lbfgsb(const Objective& objective, Vector initial, const Bounds& bounds,
-                                   const LBFGSBOptions& options) {
+OptimizationResult minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
+                                   const LBFGSBOptions &options) {
     if (bounds.lower.size() != initial.size() || bounds.upper.size() != initial.size() ||
         (bounds.lower.array() > bounds.upper.array()).any()) {
         throw std::invalid_argument("Bounds must match x and satisfy lower <= upper");
@@ -48,13 +50,17 @@ OptimizationResult minimize_lbfgsb(const Objective& objective, Vector initial, c
     Vector full_gradient(initial.size());
     double best = std::numeric_limits<double>::infinity();
     std::exception_ptr callback_error;
-    auto evaluate = [&](const Vector& x, Vector& gradient) {
+    auto evaluate = [&](const Vector &x, Vector &gradient) {
         for (Eigen::Index index = 0; index < size; ++index) {
             point[active[static_cast<std::size_t>(index)]] = x[index];
         }
         double value = 0.0;
-        try { value = objective(point, full_gradient); }
-        catch (...) { callback_error = std::current_exception(); throw; }
+        try {
+            value = objective(point, full_gradient);
+        } catch (...) {
+            callback_error = std::current_exception();
+            throw;
+        }
         ++result.evaluations;
         gradient.resize(size);
         for (Eigen::Index index = 0; index < size; ++index) {
@@ -80,15 +86,23 @@ OptimizationResult minimize_lbfgsb(const Objective& objective, Vector initial, c
     double value = 0.0;
     try {
         result.iterations = solver.minimize(evaluate, reduced, value, lower, upper);
-    } catch (const std::runtime_error&) {
-        if (callback_error) { std::rethrow_exception(callback_error); }
-        if (!std::isfinite(best)) { throw; }
+    } catch (const std::runtime_error &) {
+        if (callback_error) {
+            std::rethrow_exception(callback_error);
+        }
+        if (!std::isfinite(best)) {
+            throw;
+        }
         result.status = OptimizationStatus::LineSearchFailure;
         return result;
     }
-    if (!std::isfinite(best)) { throw std::runtime_error("Objective has no finite value and gradient"); }
-    const double projected = ((result.x - result.gradient).cwiseMax(bounds.lower).cwiseMin(bounds.upper) - result.x)
-                                 .cwiseAbs().maxCoeff();
+    if (!std::isfinite(best)) {
+        throw std::runtime_error("Objective has no finite value and gradient");
+    }
+    const double projected =
+        ((result.x - result.gradient).cwiseMax(bounds.lower).cwiseMin(bounds.upper) - result.x)
+            .cwiseAbs()
+            .maxCoeff();
     if (projected <= options.gradient_tolerance) {
         result.status = OptimizationStatus::ProjectedGradient;
     } else if (options.max_iterations > 0 && result.iterations >= options.max_iterations) {

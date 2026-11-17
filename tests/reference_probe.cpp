@@ -1,19 +1,23 @@
-#include <super_gpr/acquisition.hpp>
 #include <iomanip>
 #include <iostream>
 #include <string>
+#include <super_gpr/acquisition.hpp>
 
 namespace {
 using namespace super_gpr;
 
-void emit(const std::string& name, const Matrix& data) {
+void emit(const std::string &name, const Matrix &data) {
     std::cout << name << ' ' << data.size();
     for (Eigen::Index row = 0; row < data.rows(); ++row) {
-        for (Eigen::Index col = 0; col < data.cols(); ++col) { std::cout << ' ' << data(row, col); }
+        for (Eigen::Index col = 0; col < data.cols(); ++col) {
+            std::cout << ' ' << data(row, col);
+        }
     }
     std::cout << '\n';
 }
-void emit_scalar(const std::string& name, double value) { emit(name, Matrix::Constant(1, 1, value)); }
+void emit_scalar(const std::string &name, double value) {
+    emit(name, Matrix::Constant(1, 1, value));
+}
 Matrix training_x() {
     Matrix x(6, 2);
     x << 0.0, 0.1, 0.4, -0.2, 0.9, 0.5, 1.3, 0.7, 1.8, -0.1, 2.4, 0.4;
@@ -24,7 +28,7 @@ Matrix query_x() {
     x << 0.2, -0.1, 0.8, 0.4, 2.0, 0.2;
     return x;
 }
-void report_kernel(const std::string& name, const BoxedKernel& kernel) {
+void report_kernel(const std::string &name, const BoxedKernel &kernel) {
     const Matrix x = training_x();
     emit(name + ".train", covariance(kernel, x));
     emit(name + ".cross", covariance(kernel, x, query_x()));
@@ -39,8 +43,8 @@ void report_kernel(const std::string& name, const BoxedKernel& kernel) {
     }
     emit(name + ".gradient", derivatives);
 }
-void report_model(const std::string& name, const BoxedKernel& kernel, const Matrix& x, const Matrix& y,
-                  const Matrix& query, const GPROptions& options) {
+void report_model(const std::string &name, const BoxedKernel &kernel, const Matrix &x, const Matrix &y,
+                  const Matrix &query, const GPROptions &options) {
     GaussianProcessRegressor<BoxedKernel> model(kernel, options);
     model.fit(x, y);
     emit(name + ".theta", model.kernel().theta());
@@ -72,12 +76,14 @@ int main() try {
         {"white", BoxedKernel(WhiteKernel({0.2}))},
         {"composite", BoxedKernel(1.7 * (RBF{} + DotProduct{}) * (ConstantKernel{} + WhiteKernel{}))},
         {"fixed", BoxedKernel(ConstantKernel(Parameter::fixed(2.0)) *
-                    RBF(std::vector<Parameter>{Parameter::fixed(0.7), {1.3}}))}
-    };
-    for (const auto& entry : kernels) { report_kernel(entry.first, entry.second); }
+                              RBF(std::vector<Parameter>{Parameter::fixed(0.7), {1.3}}))}};
+    for (const auto &entry : kernels) {
+        report_kernel(entry.first, entry.second);
+    }
     Matrix targets(6, 1);
     targets << 1.2, 0.7, -0.1, -0.8, -0.3, 0.4;
-    const BoxedKernel kernel(ConstantKernel({1.2}) * RBF(std::vector<Parameter>{{0.7}, {1.1}}) + WhiteKernel({0.03}));
+    const BoxedKernel kernel(ConstantKernel({1.2}) * RBF(std::vector<Parameter>{{0.7}, {1.1}}) +
+                             WhiteKernel({0.03}));
     GPROptions options;
     options.optimize = false;
     options.alpha = 0.02;
@@ -94,13 +100,14 @@ int main() try {
     x.col(0) = Vector::LinSpaced(12, -2.0, 3.0);
     Matrix y(12, 1);
     y.col(0) = (1.5 * x.col(0).array()).sin() + 0.1 * (8.0 * x.col(0).array()).cos();
-    const BoxedKernel optimized(ConstantKernel({1.3, 1e-3, 10.0}) * RBF({0.7, 0.1, 5.0}) + WhiteKernel({0.02, 1e-5, 0.5}));
+    const BoxedKernel optimized(ConstantKernel({1.3, 1e-3, 10.0}) * RBF({0.7, 0.1, 5.0}) +
+                                WhiteKernel({0.02, 1e-5, 0.5}));
     options = GPROptions{};
     options.optimizer.gradient_tolerance = 1e-8;
     options.optimizer.function_tolerance = 1e-12;
     report_model("optimized", optimized, x, y, x, options);
     return 0;
-} catch (const std::exception& error) {
+} catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
     return 1;
 }

@@ -47,9 +47,6 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
 option(PROJECT_ENABLE_TESTING "Build tests with GoogleTest" ON)
 option(PROJECT_ENABLE_BENCHMARKS "Build benchmarks with Google Benchmark" ON)
-option(PROJECT_ENABLE_SPDLOG "Use spdlog in the example application" OFF)
-option(PROJECT_ENABLE_FMT "Use fmt in the example application" OFF)
-option(PROJECT_ENABLE_EIGEN "Use Eigen in the example application" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(ProjectOptions)
@@ -65,4 +62,24 @@ endif()
 
 if(PROJECT_ENABLE_BENCHMARKS)
   add_subdirectory(benchmarks)
+endif()
+
+find_program(PROJECT_CLANG_TIDY_EXECUTABLE NAMES clang-tidy)
+if(PROJECT_CLANG_TIDY_EXECUTABLE)
+  set(PROJECT_TIDY_SOURCES)
+  foreach(target project_core project_app project_tests project_benchmarks sklearn_reference_probe)
+    if(TARGET ${target})
+      get_target_property(target_sources ${target} SOURCES)
+      get_target_property(target_source_dir ${target} SOURCE_DIR)
+      foreach(source IN LISTS target_sources)
+        list(APPEND PROJECT_TIDY_SOURCES "${target_source_dir}/${source}")
+      endforeach()
+    endif()
+  endforeach()
+  add_custom_target(check-clang-tidy
+    COMMAND "${PROJECT_CLANG_TIDY_EXECUTABLE}" -p "${CMAKE_BINARY_DIR}" ${PROJECT_TIDY_SOURCES}
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Checking project sources and public headers with clang-tidy"
+    USES_TERMINAL
+    VERBATIM)
 endif()
