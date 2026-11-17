@@ -3,3 +3,6 @@ target_link_libraries(additive_experiment PRIVATE project_core project_options p
 
 add_executable(additive_improvement additive_improvement.cpp)
 target_link_libraries(additive_improvement PRIVATE project_core project_options project_warnings)
+
+add_executable(sample_learning_curve sample_learning_curve.cpp)
+target_link_libraries(sample_learning_curve PRIVATE project_core project_options project_warnings)
