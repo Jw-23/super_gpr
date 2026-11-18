@@ -12,6 +12,7 @@ using namespace super_gpr_experiments;
 struct Options {
     bool quick = false;
     bool plain_matern = false;
+    bool suite = false;
     std::vector<std::uint64_t> seeds{5003, 6007, 7001};
 };
 Options parse_options(int argc, char **argv) {
@@ -21,6 +22,8 @@ Options parse_options(int argc, char **argv) {
         const std::string argument(argv[index]);
         if (argument == "--quick") {
             result.quick = true;
+        } else if (argument == "--suite") {
+            result.suite = true;
         } else if (argument == "--plain-matern25") {
             result.plain_matern = true;
         } else if (argument.compare(0, 7, "--seed=") == 0) {
@@ -33,11 +36,13 @@ Options parse_options(int argc, char **argv) {
             result.seeds = {seed};
         } else {
             throw std::invalid_argument(
-                "Usage: sample_learning_curve [--quick] [--seed=integer] [--plain-matern25]");
+                "Usage: sample_learning_curve [--quick] [--seed=integer] [--plain-matern25] [--suite]");
         }
     }
     if (result.quick && result.seeds.size() != 1) {
         result.seeds = {101};
+    } else if (result.suite && result.seeds.size() != 1) {
+        result.seeds = {11003, 12007, 13001};
     }
     return result;
 }
@@ -61,15 +66,15 @@ std::uint64_t checksum(const Matrix &x, const Vector &y) {
 
 // Independent RNG streams keep the test set and existing noisy labels fixed as N grows.
 Dataset nested_dataset(Eigen::Index dimension, Eigen::Index max_count, Eigen::Index test_count,
-                       std::uint64_t seed) {
+                       std::uint64_t seed, const FunctionCase &function) {
     std::mt19937_64 training(seed);
     std::mt19937_64 testing(seed + 1000000);
     std::mt19937_64 observation_noise(seed + 2000000);
     Dataset data;
     data.train_x = sample_inputs(max_count, dimension, training);
     data.test_x = sample_inputs(test_count, dimension, testing);
-    data.train_y = additive_target(data.train_x);
-    data.test_y = additive_target(data.test_x);
+    data.train_y = function.target(data.train_x);
+    data.test_y = function.target(data.test_x);
     std::normal_distribution<double> noise(0.0, 0.03);
     for (Eigen::Index row = 0; row < max_count; ++row) {
         data.train_y[row] += noise(observation_noise);
@@ -79,7 +84,8 @@ Dataset nested_dataset(Eigen::Index dimension, Eigen::Index max_count, Eigen::In
 
 template <class K>
 void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, Eigen::Index count,
-              const K &kernel, std::uint64_t training_checksum, std::uint64_t test_checksum) {
+              const K &kernel, std::uint64_t training_checksum, std::uint64_t test_checksum,
+              const std::string &function) {
     const Matrix x = data.train_x.topRows(count);
     const Vector y = data.train_y.head(count);
     GPROptions options;
@@ -133,28 +139,34 @@ void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, 
         }
         std::cout << parameters[index];
     }
-    std::cout << '\n' << std::flush;
+    std::cout << ',' << function << '\n' << std::flush;
     std::cerr << "Finished seed=" << seed << " n=" << count << " model=" << name
               << " R2=" << 1.0 - error / variance << " RMSE=" << rmse << " seconds=" << fit_seconds
               << " converged=" << converged << '\n';
 }
 
-void run(std::uint64_t seed, bool quick, bool plain_matern) {
+void run(std::uint64_t seed, bool quick, bool plain_matern, bool suite, const FunctionCase &function) {
     const Eigen::Index dimension = quick ? 20 : 80;
-    const Eigen::Index max_count = quick ? 64 : 1024;
     const Eigen::Index test_count = quick ? 128 : 2048;
-    const std::vector<Eigen::Index> counts =
-        quick ? std::vector<Eigen::Index>{32, 64} : std::vector<Eigen::Index>{128, 256, 512, 1024};
-    const auto data = nested_dataset(dimension, max_count, test_count, seed);
+    auto counts =
+        suite ? std::vector<Eigen::Index>{128, 256, 512} : std::vector<Eigen::Index>{128, 256, 512, 1024};
+    if (quick) {
+        counts = {32, 64};
+    }
+    const auto max_count = counts.back();
+    const auto data = nested_dataset(dimension, max_count, test_count, seed, function);
     const auto training_checksum = checksum(data.train_x, data.train_y);
     const auto test_checksum = checksum(data.test_x, data.test_y);
-    if (plain_matern) {
+    if (plain_matern || suite) {
         const auto kernel = ConstantKernel({1.0, 1e-5, 100.0}) * Matern({1.0, 0.1, 100.0}, 2.5) +
                             WhiteKernel({0.001, 1e-8, 0.5});
         for (auto count : counts) {
-            evaluate("plain_matern25", seed, data, count, kernel, training_checksum, test_checksum);
+            evaluate("plain_matern25", seed, data, count, kernel, training_checksum, test_checksum,
+                     function.name);
         }
-        return;
+        if (!suite) {
+            return;
+        }
     }
     const auto groups = feature_groups(dimension);
     const auto group_count = static_cast<double>(groups.size());
@@ -168,8 +180,9 @@ void run(std::uint64_t seed, bool quick, bool plain_matern) {
                         RBF(std::vector<Parameter>(4, {0.7, 0.1, 20.0}))) +
         noise;
     for (auto count : counts) {
-        evaluate("independent", seed, data, count, independent, training_checksum, test_checksum);
-        evaluate("shared_ard", seed, data, count, shared, training_checksum, test_checksum);
+        evaluate("independent", seed, data, count, independent, training_checksum, test_checksum,
+                 function.name);
+        evaluate("shared_ard", seed, data, count, shared, training_checksum, test_checksum, function.name);
     }
 }
 } // namespace
@@ -177,12 +190,18 @@ void run(std::uint64_t seed, bool quick, bool plain_matern) {
 int main(int argc, char **argv) try {
     Eigen::setNbThreads(1);
     const auto options = parse_options(argc, argv);
-    std::cout << std::setprecision(12)
-              << "dimension,train_count,test_count,seed,model,parameters,rmse,nrmse,r2,mae,p95_absolute_"
-                 "error,max_absolute_error,train_rmse,noise_std,fit_seconds,predict_seconds,iterations,"
-                 "evaluations,converged,lml,training_pool_checksum,test_checksum,physical_parameters\n";
+    std::cout
+        << std::setprecision(12)
+        << "dimension,train_count,test_count,seed,model,parameters,rmse,nrmse,r2,mae,p95_absolute_"
+           "error,max_absolute_error,train_rmse,noise_std,fit_seconds,predict_seconds,iterations,"
+           "evaluations,converged,lml,training_pool_checksum,test_checksum,physical_parameters,function\n";
+    const auto functions =
+        options.suite ? function_suite() : std::vector<FunctionCase>{{"original", additive_target}};
     for (auto seed : options.seeds) {
-        run(seed, options.quick, options.plain_matern);
+        for (const auto &function : functions) {
+            std::cerr << "Function=" << function.name << '\n';
+            run(seed, options.quick, options.plain_matern, options.suite, function);
+        }
     }
     return 0;
 } catch (const std::exception &error) {

@@ -27,12 +27,13 @@ def load_records(paths):
     for row in rows:
         dimension, count, seed = (int(row[key]) for key in ("dimension", "train_count", "seed"))
         model = row["model"]
+        function = row.get("function", "original")
         assert model in MODELS
-        key = (dimension, seed, count, model)
+        key = (dimension, function, seed, count, model)
         assert key not in unique, f"Duplicate fit: {key}"
         unique.add(key)
-        metadata[(dimension, seed)].add((row["test_count"], row["training_pool_checksum"], row["test_checksum"]))
-        grids[(dimension, seed, model)].add(count)
+        metadata[(dimension, function, seed)].add((row["test_count"], row["training_pool_checksum"], row["test_checksum"]))
+        grids[(dimension, function, seed, model)].add(count)
         expected = {"independent": dimension // 2 + 1, "shared_ard": 6, "plain_matern25": 3}[model]
         assert int(row["parameters"]) == expected
         values = [float(value) for value in row["physical_parameters"].split(";")]
@@ -45,8 +46,8 @@ def load_records(paths):
     for key, values in metadata.items():
         assert len(values) == 1, f"Dataset changed across sample counts or models: {key}"
     present = {row["model"] for row in rows}
-    for dimension, seed in metadata:
-        assert all((dimension, seed, model) in grids for model in present), "Missing model for a seed"
+    for dimension, function, seed in metadata:
+        assert all((dimension, function, seed, model) in grids for model in present), "Missing model for a seed"
     all_grids = list(grids.values())
     assert all(grid == all_grids[0] for grid in all_grids), "Seeds use different sample counts"
     return rows

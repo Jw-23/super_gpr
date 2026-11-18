@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <random>
+#include <string>
 #include <super_gpr/additive.hpp>
 #include <vector>
 
@@ -85,6 +86,84 @@ inline std::vector<FeatureGroup> feature_groups(Eigen::Index dimension) {
         result.push_back({start, start + 1, start + 2, start + 3});
     }
     return result;
+}
+
+template <class F> Vector grouped_target(const Matrix &x, const F &function) {
+    const auto groups = x.cols() / 4;
+    Vector result = Vector::Zero(x.rows());
+    for (Eigen::Index row = 0; row < x.rows(); ++row) {
+        for (Eigen::Index group = 0; group < groups; ++group) {
+            const auto start = 4 * group;
+            result[row] +=
+                function(x(row, start), x(row, start + 1), x(row, start + 2), x(row, start + 3), group);
+        }
+    }
+    return result / std::sqrt(static_cast<double>(groups));
+}
+
+inline Vector polynomial_target(const Matrix &x) {
+    return grouped_target(x, [](double a, double b, double c, double d, Eigen::Index) {
+        return 0.8 * a + 0.6 * (b * b - 1.0 / 3.0) + 0.5 * c * d + 0.4 * d * d * d;
+    });
+}
+
+inline Vector periodic_target(const Matrix &x) {
+    const double pi = std::acos(-1.0);
+    return grouped_target(x, [pi](double a, double b, double c, double d, Eigen::Index) {
+        return std::sin(2.0 * pi * a) + 0.6 * std::cos(pi * (b + c)) + 0.3 * std::sin(pi * d);
+    });
+}
+
+inline Vector nonsmooth_target(const Matrix &x) {
+    return grouped_target(x, [](double a, double b, double c, double d, Eigen::Index) {
+        return std::abs(a + 0.5 * b) + 0.6 * std::max(c, 0.0) + 0.4 * std::abs(d);
+    });
+}
+
+inline Vector multiscale_target(const Matrix &x) {
+    return grouped_target(x, [](double a, double b, double c, double d, Eigen::Index group) {
+        const double scale = 0.6 + 0.6 * static_cast<double>(group % 5);
+        const double weight = 0.6 + 0.2 * static_cast<double>(group % 5);
+        return weight * (std::sin(scale * (2.5 * a + 1.2 * b)) +
+                         0.6 * std::cos((3.6 - scale) * (2.0 * c - 0.7 * d)) + 0.5 * a * c);
+    });
+}
+
+// Every product crosses the fixed four-dimensional kernel groups.
+inline Vector cross_pair_target(const Matrix &x) {
+    const auto half = x.cols() / 2;
+    Vector result = Vector::Zero(x.rows());
+    for (Eigen::Index axis = 0; axis < half; ++axis) {
+        result.array() += x.col(axis).array() * x.col(axis + half).array();
+    }
+    return result * (3.0 / std::sqrt(static_cast<double>(half)));
+}
+
+inline Vector linear_target(const Matrix &x) {
+    Vector result = Vector::Zero(x.rows());
+    double squared_weights = 0.0;
+    for (Eigen::Index axis = 0; axis < x.cols(); ++axis) {
+        const double weight = 0.5 + 0.2 * static_cast<double>(axis % 7);
+        result += weight * x.col(axis);
+        squared_weights += weight * weight;
+    }
+    return result / std::sqrt(squared_weights / 3.0);
+}
+
+inline Vector dense_fourier_target(const Matrix &x) {
+    return interaction_target(x, 424242);
+}
+
+struct FunctionCase {
+    std::string name;
+    Vector (*target)(const Matrix &);
+};
+
+inline std::vector<FunctionCase> function_suite() {
+    return {{"polynomial", polynomial_target},      {"periodic", periodic_target},
+            {"nonsmooth", nonsmooth_target},        {"multiscale", multiscale_target},
+            {"cross_pair", cross_pair_target},      {"linear", linear_target},
+            {"dense_fourier", dense_fourier_target}};
 }
 
 } // namespace super_gpr_experiments
