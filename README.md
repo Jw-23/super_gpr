@@ -276,6 +276,8 @@ LML(theta) - 0.5 * sum_i ((theta_i - prior.mean_i) / prior.standard_deviation_i)
 [样本数学习曲线](experiments/SAMPLE_LEARNING_CURVE.md)。
 与普通全维 Matérn 2.5 GP 的配对预测对照见
 [80 维基线比较](experiments/MATERN_BASELINE_COMPARISON.md)。
+更多函数上的适用性与结构失配结果见
+[七类函数对照](experiments/FUNCTION_SUITE.md)。
 
 ## GPR 的数值约定
 

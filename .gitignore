@@ -15,6 +15,7 @@
 Thumbs.db
 
 # Generated files
+__pycache__/
 *.user
 *.swp
 *.tmp

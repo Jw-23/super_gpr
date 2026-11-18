@@ -54,6 +54,7 @@ def load_records(paths):
 
 
 def summarize(rows):
+    assert len({row.get("function", "original") for row in rows}) == 1, "Summarize each function separately"
     grouped = defaultdict(list)
     trajectories = defaultdict(list)
     for row in rows:
@@ -98,6 +99,7 @@ def summarize(rows):
 
 
 def plot(rows, path):
+    assert len({row.get("function", "original") for row in rows}) == 1, "Plot each function separately"
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt

@@ -15,6 +15,8 @@
 [SAMPLE_LEARNING_CURVE.md](SAMPLE_LEARNING_CURVE.md)。
 在完全相同数据上与普通全维 Matérn 2.5 GP 的对照见
 [MATERN_BASELINE_COMPARISON.md](MATERN_BASELINE_COMPARISON.md)。
+七类新函数（含周期、尖点、多尺度与跨组交互）的配对对照见
+[FUNCTION_SUITE.md](FUNCTION_SUITE.md)。
 
 ## 复现
 
