@@ -65,10 +65,13 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--run", type=int, choices=(1, 2, 3))
     parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--fresh", action="store_true", help="Use preregistered improvement instances 4/5/6")
     args = parser.parse_args()
     runs = ((1, 101),) if args.quick else RUNS
-    for instance, seed in runs:
-        if args.run is None or instance == args.run:
+    if args.fresh and not args.quick:
+        runs = ((4, 31013), (5, 32003), (6, 33013))
+    for run, (instance, seed) in enumerate(runs, 1):
+        if args.run is None or run == args.run:
             generate(args.output, instance, seed, args.quick)
 
 
