@@ -112,19 +112,29 @@ def plot(rows, path):
         for axis, metric in zip(axes, ('r2','local_nrmse')):
             samples = [[float(row[metric]) for row in tests if row['function']==name
                         and (row['selected']=='1' if candidate=='selected' else row['candidate']==candidate)] for _,name in FUNCTIONS]
-            axis.errorbar([mean(values) for values in samples], [index+offset for index in range(len(FUNCTIONS))],
-                          xerr=[stdev(values) if len(values)>1 else 0 for values in samples],
-                          fmt='o',capsize=3,color=color,label=label)
+            means = [mean(values) for values in samples]
+            positions = [index + offset for index in range(len(FUNCTIONS))]
+            if metric == 'r2':
+                axis.errorbar(means, positions, xerr=[stdev(values) if len(values)>1 else 0 for values in samples],
+                              fmt='o', capsize=3, color=color, label=label)
+            else:
+                axis.plot(means, positions, 'o', color=color, label=label)
+                for position, values in zip(positions, samples):
+                    axis.scatter(values, [position] * len(values), marker='|', color=color, alpha=0.5)
             axis.set_yticks(range(len(FUNCTIONS)),[name for _,name in FUNCTIONS])
-            axis.invert_yaxis()
             axis.grid(alpha=.2)
     axes[0].set_xlabel('Global test R² (higher is better)')
     axes[0].axvline(0,color='gray',linewidth=.8)
-    axes[1].set_xscale('symlog',linthresh=0.1)
-    axes[1].set_xlabel('Local RMSE / global SD (lower is better; symlog)')
+    axes[1].set_xscale('log')
+    local_values = [float(row['local_nrmse']) for row in tests if row['candidate']=='baseline' or row['selected']=='1']
+    axes[1].set_xlim(min(local_values)*0.7, max(local_values)*1.5)
+    axes[1].set_xlabel('Local RMSE / global SD (lower is better; log scale)')
+    for axis in axes:
+        axis.invert_yaxis()
     handles, labels = axes[0].get_legend_handles_labels()
     figure.legend(handles,labels,loc='outside lower center',ncol=2,frameon=False)
-    figure.suptitle('Full-dimensional GP: 512 training samples, fresh BBOB instances\nMean ± sample SD; model selection uses training folds only')
+    figure.suptitle('Full-dimensional GP: 512 training samples, fresh BBOB instances\n'
+                   'Global: mean ± sample SD; local: mean and individual instances; training-only selection')
     figure.savefig(path,dpi=180)
     plt.close(figure)
 

@@ -280,6 +280,8 @@ LML(theta) - 0.5 * sum_i ((theta_i - prior.mean_i) / prior.standard_deviation_i)
 [七类函数对照](experiments/FUNCTION_SUITE.md)。
 80 维病态黑盒基准及最优点附近的拟合诊断见
 [BBOB 困难函数实验](experiments/BBOB_PATHOLOGICAL.md)。
+相同观测预算下的全维核与输出变换改进见
+[全维 GP 改进实验](experiments/FULL_GP_IMPROVEMENT.md)。
 
 ## GPR 的数值约定
 

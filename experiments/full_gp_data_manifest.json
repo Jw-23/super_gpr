@@ -1,0 +1,375 @@
+{
+  "generator": "experiments/generate_bbob_data.py --fresh",
+  "code_commit": "b8c8cfc",
+  "runs": [
+    {
+      "ioh_version": "0.3.22",
+      "numpy_version": "2.2.6",
+      "dimension": 80,
+      "instance": 4,
+      "seed": 31013,
+      "training_count": 512,
+      "global_test_count": 2048,
+      "local_test_count": 512,
+      "input_mapping": "GP input = BBOB input / 5",
+      "noise": 0,
+      "local_distribution": "clip(xopt + Normal(0, 0.1^2 I), -5, 5)",
+      "cases": [
+        {
+          "function_id": 7,
+          "name": "f07_step_ellipsoid",
+          "implementation_name": "StepEllipsoid",
+          "file": "f07_step_ellipsoid.txt",
+          "sha256": "a9a19efe32e20f81dbee3d6dbd256b7fa19fd2159b53cbd6bd6e617c4f2f51bd",
+          "train_input_sha256": "29b282e54728bd5226e6020ee3032748f7f3dcf9045ee7aa96e0f118a9154eef",
+          "global_input_sha256": "bc03906208745e9ae6c005d6ee451cf3f05865ad07f978803d5305daef882825"
+        },
+        {
+          "function_id": 9,
+          "name": "f09_rosenbrock_rotated",
+          "implementation_name": "RosenbrockRotated",
+          "file": "f09_rosenbrock_rotated.txt",
+          "sha256": "4b3eccf36de650505c7eb18a5d779270f0cd6e6bd59da65262ec3c192d5eeda1",
+          "train_input_sha256": "29b282e54728bd5226e6020ee3032748f7f3dcf9045ee7aa96e0f118a9154eef",
+          "global_input_sha256": "bc03906208745e9ae6c005d6ee451cf3f05865ad07f978803d5305daef882825"
+        },
+        {
+          "function_id": 10,
+          "name": "f10_ellipsoid_rotated",
+          "implementation_name": "EllipsoidRotated",
+          "file": "f10_ellipsoid_rotated.txt",
+          "sha256": "8ff84522f74b1159bb6a9e1a9b01bf78fff2cd85a06e76743ceadbc7eba68578",
+          "train_input_sha256": "29b282e54728bd5226e6020ee3032748f7f3dcf9045ee7aa96e0f118a9154eef",
+          "global_input_sha256": "bc03906208745e9ae6c005d6ee451cf3f05865ad07f978803d5305daef882825"
+        },
+        {
+          "function_id": 11,
+          "name": "f11_discus",
+          "implementation_name": "Discus",
+          "file": "f11_discus.txt",
+          "sha256": "b03ed5bbcfc1939ce8702c7df0131f11fcaa7f5f926c5f17e376d2c779fcd02b",
+          "train_input_sha256": "29b282e54728bd5226e6020ee3032748f7f3dcf9045ee7aa96e0f118a9154eef",
+          "global_input_sha256": "bc03906208745e9ae6c005d6ee451cf3f05865ad07f978803d5305daef882825"
+        },
+        {
+          "function_id": 12,
+          "name": "f12_bent_cigar",
+          "implementation_name": "BentCigar",
+          "file": "f12_bent_cigar.txt",
+          "sha256": "d48cbbff211f5820d1a029cf575e955fe4e95408734b2ea43d04017128e58789",
+          "train_input_sha256": "29b282e54728bd5226e6020ee3032748f7f3dcf9045ee7aa96e0f118a9154eef",
+          "global_input_sha256": "bc03906208745e9ae6c005d6ee451cf3f05865ad07f978803d5305daef882825"
+        },
+        {
+          "function_id": 13,
+          "name": "f13_sharp_ridge",
+          "implementation_name": "SharpRidge",
+          "file": "f13_sharp_ridge.txt",
+          "sha256": "77e5f1ba1d937248fcae409c0e4af4979e9a49ffb3dc090614582799290feb99",
+          "train_input_sha256": "29b282e54728bd5226e6020ee3032748f7f3dcf9045ee7aa96e0f118a9154eef",
+          "global_input_sha256": "bc03906208745e9ae6c005d6ee451cf3f05865ad07f978803d5305daef882825"
+        },
+        {
+          "function_id": 15,
+          "name": "f15_rastrigin_rotated",
+          "implementation_name": "RastriginRotated",
+          "file": "f15_rastrigin_rotated.txt",
+          "sha256": "a3b084eb50627d9506232f54b6f547925fa67f2ef4c44e1e0e2189c1b0833db2",
+          "train_input_sha256": "29b282e54728bd5226e6020ee3032748f7f3dcf9045ee7aa96e0f118a9154eef",
+          "global_input_sha256": "bc03906208745e9ae6c005d6ee451cf3f05865ad07f978803d5305daef882825"
+        },
+        {
+          "function_id": 16,
+          "name": "f16_weierstrass",
+          "implementation_name": "Weierstrass",
+          "file": "f16_weierstrass.txt",
+          "sha256": "d57cf3ac2e9f32b59200c298353c3ea17ff35fd0cc29516a24d157a1f7877f2f",
+          "train_input_sha256": "29b282e54728bd5226e6020ee3032748f7f3dcf9045ee7aa96e0f118a9154eef",
+          "global_input_sha256": "bc03906208745e9ae6c005d6ee451cf3f05865ad07f978803d5305daef882825"
+        },
+        {
+          "function_id": 18,
+          "name": "f18_schaffers1000",
+          "implementation_name": "Schaffers1000",
+          "file": "f18_schaffers1000.txt",
+          "sha256": "66e5cd9adb6d31e71f761c0ad0c978fde21f3a125844862440078b9f45ab5026",
+          "train_input_sha256": "29b282e54728bd5226e6020ee3032748f7f3dcf9045ee7aa96e0f118a9154eef",
+          "global_input_sha256": "bc03906208745e9ae6c005d6ee451cf3f05865ad07f978803d5305daef882825"
+        },
+        {
+          "function_id": 21,
+          "name": "f21_gallagher101",
+          "implementation_name": "Gallagher101",
+          "file": "f21_gallagher101.txt",
+          "sha256": "b638c7e0e16cd14369f9ec89d47548eae15742b45ba4dcc8378bf625fa228671",
+          "train_input_sha256": "29b282e54728bd5226e6020ee3032748f7f3dcf9045ee7aa96e0f118a9154eef",
+          "global_input_sha256": "bc03906208745e9ae6c005d6ee451cf3f05865ad07f978803d5305daef882825"
+        },
+        {
+          "function_id": 23,
+          "name": "f23_katsuura",
+          "implementation_name": "Katsuura",
+          "file": "f23_katsuura.txt",
+          "sha256": "8d9c7cdf314cd7dfdb725d84198d6161aa13b8ce3aca7560e66fe9e5b5bacbe6",
+          "train_input_sha256": "29b282e54728bd5226e6020ee3032748f7f3dcf9045ee7aa96e0f118a9154eef",
+          "global_input_sha256": "bc03906208745e9ae6c005d6ee451cf3f05865ad07f978803d5305daef882825"
+        },
+        {
+          "function_id": 24,
+          "name": "f24_lunacek",
+          "implementation_name": "LunacekBiRastrigin",
+          "file": "f24_lunacek.txt",
+          "sha256": "37b6d5941a0b504ed873aa90721d196bf90fdc2f7ebbe797de19e46017ecb84b",
+          "train_input_sha256": "29b282e54728bd5226e6020ee3032748f7f3dcf9045ee7aa96e0f118a9154eef",
+          "global_input_sha256": "bc03906208745e9ae6c005d6ee451cf3f05865ad07f978803d5305daef882825"
+        }
+      ]
+    },
+    {
+      "ioh_version": "0.3.22",
+      "numpy_version": "2.2.6",
+      "dimension": 80,
+      "instance": 5,
+      "seed": 32003,
+      "training_count": 512,
+      "global_test_count": 2048,
+      "local_test_count": 512,
+      "input_mapping": "GP input = BBOB input / 5",
+      "noise": 0,
+      "local_distribution": "clip(xopt + Normal(0, 0.1^2 I), -5, 5)",
+      "cases": [
+        {
+          "function_id": 7,
+          "name": "f07_step_ellipsoid",
+          "implementation_name": "StepEllipsoid",
+          "file": "f07_step_ellipsoid.txt",
+          "sha256": "9bbe8d958af98c8e02615e0af208b9a99f93ddb3c11f7a8ffdbc74939d6d6c89",
+          "train_input_sha256": "aa9dad6658d467f95b26e8521f87d383a90b1dcf7a706f7b4def039c357bf7b4",
+          "global_input_sha256": "aa37f682472165a7deb655f99e7f071174d81ebc35b7fdb88c88a8708d5e2d05"
+        },
+        {
+          "function_id": 9,
+          "name": "f09_rosenbrock_rotated",
+          "implementation_name": "RosenbrockRotated",
+          "file": "f09_rosenbrock_rotated.txt",
+          "sha256": "ad0ce7b5831467064e5684e832d4260274844815a52c41ca8f8e0c5b7b4df81c",
+          "train_input_sha256": "aa9dad6658d467f95b26e8521f87d383a90b1dcf7a706f7b4def039c357bf7b4",
+          "global_input_sha256": "aa37f682472165a7deb655f99e7f071174d81ebc35b7fdb88c88a8708d5e2d05"
+        },
+        {
+          "function_id": 10,
+          "name": "f10_ellipsoid_rotated",
+          "implementation_name": "EllipsoidRotated",
+          "file": "f10_ellipsoid_rotated.txt",
+          "sha256": "69bbc22f232f1d6d812d63dca438cebad53de43d8064e9190da44df435c0b7fb",
+          "train_input_sha256": "aa9dad6658d467f95b26e8521f87d383a90b1dcf7a706f7b4def039c357bf7b4",
+          "global_input_sha256": "aa37f682472165a7deb655f99e7f071174d81ebc35b7fdb88c88a8708d5e2d05"
+        },
+        {
+          "function_id": 11,
+          "name": "f11_discus",
+          "implementation_name": "Discus",
+          "file": "f11_discus.txt",
+          "sha256": "8889819f028faa1fd4a37c3977395eb12b60953b098f8aac60f9970038133015",
+          "train_input_sha256": "aa9dad6658d467f95b26e8521f87d383a90b1dcf7a706f7b4def039c357bf7b4",
+          "global_input_sha256": "aa37f682472165a7deb655f99e7f071174d81ebc35b7fdb88c88a8708d5e2d05"
+        },
+        {
+          "function_id": 12,
+          "name": "f12_bent_cigar",
+          "implementation_name": "BentCigar",
+          "file": "f12_bent_cigar.txt",
+          "sha256": "f8878b36f56ac01f6c7e27d201449e6c57866545694f8393d6265fdad2d49856",
+          "train_input_sha256": "aa9dad6658d467f95b26e8521f87d383a90b1dcf7a706f7b4def039c357bf7b4",
+          "global_input_sha256": "aa37f682472165a7deb655f99e7f071174d81ebc35b7fdb88c88a8708d5e2d05"
+        },
+        {
+          "function_id": 13,
+          "name": "f13_sharp_ridge",
+          "implementation_name": "SharpRidge",
+          "file": "f13_sharp_ridge.txt",
+          "sha256": "11c644a6dd6464f4f2ada8b3dd60adc6e3f5ac55a406038fb2205a2ee15fd34e",
+          "train_input_sha256": "aa9dad6658d467f95b26e8521f87d383a90b1dcf7a706f7b4def039c357bf7b4",
+          "global_input_sha256": "aa37f682472165a7deb655f99e7f071174d81ebc35b7fdb88c88a8708d5e2d05"
+        },
+        {
+          "function_id": 15,
+          "name": "f15_rastrigin_rotated",
+          "implementation_name": "RastriginRotated",
+          "file": "f15_rastrigin_rotated.txt",
+          "sha256": "718983de20c152f4e9377c85803a77ae2097881719e288c3fc45b1c35cf4b0ae",
+          "train_input_sha256": "aa9dad6658d467f95b26e8521f87d383a90b1dcf7a706f7b4def039c357bf7b4",
+          "global_input_sha256": "aa37f682472165a7deb655f99e7f071174d81ebc35b7fdb88c88a8708d5e2d05"
+        },
+        {
+          "function_id": 16,
+          "name": "f16_weierstrass",
+          "implementation_name": "Weierstrass",
+          "file": "f16_weierstrass.txt",
+          "sha256": "eb231f302bd874fd477b050289d3c0f9e67a8f8fb64d12de595df7a6c4f81603",
+          "train_input_sha256": "aa9dad6658d467f95b26e8521f87d383a90b1dcf7a706f7b4def039c357bf7b4",
+          "global_input_sha256": "aa37f682472165a7deb655f99e7f071174d81ebc35b7fdb88c88a8708d5e2d05"
+        },
+        {
+          "function_id": 18,
+          "name": "f18_schaffers1000",
+          "implementation_name": "Schaffers1000",
+          "file": "f18_schaffers1000.txt",
+          "sha256": "8b2a2a2144c871a11b5c1c59e463a326cffb4b2ed834a9b8e96eee40143bff07",
+          "train_input_sha256": "aa9dad6658d467f95b26e8521f87d383a90b1dcf7a706f7b4def039c357bf7b4",
+          "global_input_sha256": "aa37f682472165a7deb655f99e7f071174d81ebc35b7fdb88c88a8708d5e2d05"
+        },
+        {
+          "function_id": 21,
+          "name": "f21_gallagher101",
+          "implementation_name": "Gallagher101",
+          "file": "f21_gallagher101.txt",
+          "sha256": "66f7601476588161cab27753c3b784d4f7345c01d72b7f846ba72a1491dd8763",
+          "train_input_sha256": "aa9dad6658d467f95b26e8521f87d383a90b1dcf7a706f7b4def039c357bf7b4",
+          "global_input_sha256": "aa37f682472165a7deb655f99e7f071174d81ebc35b7fdb88c88a8708d5e2d05"
+        },
+        {
+          "function_id": 23,
+          "name": "f23_katsuura",
+          "implementation_name": "Katsuura",
+          "file": "f23_katsuura.txt",
+          "sha256": "1a8f058b7478bfc58b99fbd5724a7df4fafd92039ca3d0eda29bc6b48e59e485",
+          "train_input_sha256": "aa9dad6658d467f95b26e8521f87d383a90b1dcf7a706f7b4def039c357bf7b4",
+          "global_input_sha256": "aa37f682472165a7deb655f99e7f071174d81ebc35b7fdb88c88a8708d5e2d05"
+        },
+        {
+          "function_id": 24,
+          "name": "f24_lunacek",
+          "implementation_name": "LunacekBiRastrigin",
+          "file": "f24_lunacek.txt",
+          "sha256": "89f1ba9ea00e2fb228cf32be8355769cc77f5cb231b2c56a8abd69928549eebf",
+          "train_input_sha256": "aa9dad6658d467f95b26e8521f87d383a90b1dcf7a706f7b4def039c357bf7b4",
+          "global_input_sha256": "aa37f682472165a7deb655f99e7f071174d81ebc35b7fdb88c88a8708d5e2d05"
+        }
+      ]
+    },
+    {
+      "ioh_version": "0.3.22",
+      "numpy_version": "2.2.6",
+      "dimension": 80,
+      "instance": 6,
+      "seed": 33013,
+      "training_count": 512,
+      "global_test_count": 2048,
+      "local_test_count": 512,
+      "input_mapping": "GP input = BBOB input / 5",
+      "noise": 0,
+      "local_distribution": "clip(xopt + Normal(0, 0.1^2 I), -5, 5)",
+      "cases": [
+        {
+          "function_id": 7,
+          "name": "f07_step_ellipsoid",
+          "implementation_name": "StepEllipsoid",
+          "file": "f07_step_ellipsoid.txt",
+          "sha256": "2a7c9fb90901feb38b0678be406d226b9c2a10d3eac41a30446f410f5818ddc0",
+          "train_input_sha256": "828bb1f4b021dc8eaf62d4e8a9255fb47bc21ce77c6ef4b34816100e4266a7d9",
+          "global_input_sha256": "ab2e28e1f13222df3fda1b98724a69047b0e54f5d612dd5f7968670788d1a9cc"
+        },
+        {
+          "function_id": 9,
+          "name": "f09_rosenbrock_rotated",
+          "implementation_name": "RosenbrockRotated",
+          "file": "f09_rosenbrock_rotated.txt",
+          "sha256": "23f2491af042552397bc137aa21703d1bb7429a02b486b33beb52de570085461",
+          "train_input_sha256": "828bb1f4b021dc8eaf62d4e8a9255fb47bc21ce77c6ef4b34816100e4266a7d9",
+          "global_input_sha256": "ab2e28e1f13222df3fda1b98724a69047b0e54f5d612dd5f7968670788d1a9cc"
+        },
+        {
+          "function_id": 10,
+          "name": "f10_ellipsoid_rotated",
+          "implementation_name": "EllipsoidRotated",
+          "file": "f10_ellipsoid_rotated.txt",
+          "sha256": "ac675f350842720fb8e31a4fa01be47fb57b5256fa258d460381197a31f241ca",
+          "train_input_sha256": "828bb1f4b021dc8eaf62d4e8a9255fb47bc21ce77c6ef4b34816100e4266a7d9",
+          "global_input_sha256": "ab2e28e1f13222df3fda1b98724a69047b0e54f5d612dd5f7968670788d1a9cc"
+        },
+        {
+          "function_id": 11,
+          "name": "f11_discus",
+          "implementation_name": "Discus",
+          "file": "f11_discus.txt",
+          "sha256": "a0e3ed6fa815f97f7def580bdfb372aba0651c37d6f9fc15c9000902a9990527",
+          "train_input_sha256": "828bb1f4b021dc8eaf62d4e8a9255fb47bc21ce77c6ef4b34816100e4266a7d9",
+          "global_input_sha256": "ab2e28e1f13222df3fda1b98724a69047b0e54f5d612dd5f7968670788d1a9cc"
+        },
+        {
+          "function_id": 12,
+          "name": "f12_bent_cigar",
+          "implementation_name": "BentCigar",
+          "file": "f12_bent_cigar.txt",
+          "sha256": "ada3115b7a97bd0e486571ce6e0085b5e4eb8ee2dbd16404eb254ffce3d41986",
+          "train_input_sha256": "828bb1f4b021dc8eaf62d4e8a9255fb47bc21ce77c6ef4b34816100e4266a7d9",
+          "global_input_sha256": "ab2e28e1f13222df3fda1b98724a69047b0e54f5d612dd5f7968670788d1a9cc"
+        },
+        {
+          "function_id": 13,
+          "name": "f13_sharp_ridge",
+          "implementation_name": "SharpRidge",
+          "file": "f13_sharp_ridge.txt",
+          "sha256": "14dafcaa6aee9d19472a7dfa33a9e005a8e6addd8b65db728aea770127d143c2",
+          "train_input_sha256": "828bb1f4b021dc8eaf62d4e8a9255fb47bc21ce77c6ef4b34816100e4266a7d9",
+          "global_input_sha256": "ab2e28e1f13222df3fda1b98724a69047b0e54f5d612dd5f7968670788d1a9cc"
+        },
+        {
+          "function_id": 15,
+          "name": "f15_rastrigin_rotated",
+          "implementation_name": "RastriginRotated",
+          "file": "f15_rastrigin_rotated.txt",
+          "sha256": "5775359db3894b1e0bfd1f123418bd7daac2b4a0168f7e09c563a24add3d0247",
+          "train_input_sha256": "828bb1f4b021dc8eaf62d4e8a9255fb47bc21ce77c6ef4b34816100e4266a7d9",
+          "global_input_sha256": "ab2e28e1f13222df3fda1b98724a69047b0e54f5d612dd5f7968670788d1a9cc"
+        },
+        {
+          "function_id": 16,
+          "name": "f16_weierstrass",
+          "implementation_name": "Weierstrass",
+          "file": "f16_weierstrass.txt",
+          "sha256": "3bc6ac2c07c0106e943491986d38012591418432bd0220266fff8da21e232dc0",
+          "train_input_sha256": "828bb1f4b021dc8eaf62d4e8a9255fb47bc21ce77c6ef4b34816100e4266a7d9",
+          "global_input_sha256": "ab2e28e1f13222df3fda1b98724a69047b0e54f5d612dd5f7968670788d1a9cc"
+        },
+        {
+          "function_id": 18,
+          "name": "f18_schaffers1000",
+          "implementation_name": "Schaffers1000",
+          "file": "f18_schaffers1000.txt",
+          "sha256": "47014caf477c20729dec37e2170707fddd6e616cde9dde8c68477485953ffd95",
+          "train_input_sha256": "828bb1f4b021dc8eaf62d4e8a9255fb47bc21ce77c6ef4b34816100e4266a7d9",
+          "global_input_sha256": "ab2e28e1f13222df3fda1b98724a69047b0e54f5d612dd5f7968670788d1a9cc"
+        },
+        {
+          "function_id": 21,
+          "name": "f21_gallagher101",
+          "implementation_name": "Gallagher101",
+          "file": "f21_gallagher101.txt",
+          "sha256": "10e5b93a704742d73cfe58909f8851c330c00ef76ad7e7016b64682b0f1ff18b",
+          "train_input_sha256": "828bb1f4b021dc8eaf62d4e8a9255fb47bc21ce77c6ef4b34816100e4266a7d9",
+          "global_input_sha256": "ab2e28e1f13222df3fda1b98724a69047b0e54f5d612dd5f7968670788d1a9cc"
+        },
+        {
+          "function_id": 23,
+          "name": "f23_katsuura",
+          "implementation_name": "Katsuura",
+          "file": "f23_katsuura.txt",
+          "sha256": "1c78e8ce20706bfe9cf52d4a1f637045faab3a574d84f3942f37168b4ceb8b22",
+          "train_input_sha256": "828bb1f4b021dc8eaf62d4e8a9255fb47bc21ce77c6ef4b34816100e4266a7d9",
+          "global_input_sha256": "ab2e28e1f13222df3fda1b98724a69047b0e54f5d612dd5f7968670788d1a9cc"
+        },
+        {
+          "function_id": 24,
+          "name": "f24_lunacek",
+          "implementation_name": "LunacekBiRastrigin",
+          "file": "f24_lunacek.txt",
+          "sha256": "a7651a282d129f6bda2899672ed0771157eea0932a9194daccf9fe4ac43872e7",
+          "train_input_sha256": "828bb1f4b021dc8eaf62d4e8a9255fb47bc21ce77c6ef4b34816100e4266a7d9",
+          "global_input_sha256": "ab2e28e1f13222df3fda1b98724a69047b0e54f5d612dd5f7968670788d1a9cc"
+        }
+      ]
+    }
+  ]
+}

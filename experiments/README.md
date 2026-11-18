@@ -19,6 +19,8 @@
 [FUNCTION_SUITE.md](FUNCTION_SUITE.md)。
 旋转、病态尺度、狭窄谷地和多峰结构的 12 类 BBOB 黑盒函数实验见
 [BBOB_PATHOLOGICAL.md](BBOB_PATHOLOGICAL.md)，同时检查全域与最优点附近的预测误差。
+全维 GP 的多起点优化、二次交互核和输出变换改进见
+[FULL_GP_IMPROVEMENT.md](FULL_GP_IMPROVEMENT.md)，使用新的 BBOB 实例和训练内交叉验证选择模型。
 
 ## 复现
 
