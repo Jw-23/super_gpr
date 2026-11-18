@@ -17,6 +17,8 @@
 [MATERN_BASELINE_COMPARISON.md](MATERN_BASELINE_COMPARISON.md)。
 七类新函数（含周期、尖点、多尺度与跨组交互）的配对对照见
 [FUNCTION_SUITE.md](FUNCTION_SUITE.md)。
+旋转、病态尺度、狭窄谷地和多峰结构的 12 类 BBOB 黑盒函数实验见
+[BBOB_PATHOLOGICAL.md](BBOB_PATHOLOGICAL.md)，同时检查全域与最优点附近的预测误差。
 
 ## 复现
 

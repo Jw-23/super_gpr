@@ -278,6 +278,8 @@ LML(theta) - 0.5 * sum_i ((theta_i - prior.mean_i) / prior.standard_deviation_i)
 [80 维基线比较](experiments/MATERN_BASELINE_COMPARISON.md)。
 更多函数上的适用性与结构失配结果见
 [七类函数对照](experiments/FUNCTION_SUITE.md)。
+80 维病态黑盒基准及最优点附近的拟合诊断见
+[BBOB 困难函数实验](experiments/BBOB_PATHOLOGICAL.md)。
 
 ## GPR 的数值约定
 

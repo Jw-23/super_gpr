@@ -67,8 +67,9 @@ def plot(rows, path, functions=FUNCTIONS):
     for axis in list(axes.flat)[len(functions):]:
         axis.axis("off")
     figure.legend(handles, labels, loc="outside lower center", ncol=3, frameon=False)
+    replication = "instance/data pairs" if any(int(row.get("instance") or 0) > 0 for row in rows) else "seeds"
     figure.suptitle(f"{rows[0]['dimension']}D paired functions: mean ± sample SD over "
-                   f"{len({row['seed'] for row in rows})} seeds\n"
+                   f"{len({row['seed'] for row in rows})} {replication}\n"
                    f"Fixed {rows[0]['test_count']}-point test sets; nested training sets; all fits retained")
     figure.savefig(path, dpi=180)
     plt.close(figure)
@@ -133,7 +134,8 @@ def local_plot(rows, path, functions):
     axis.set_xticks(range(4), ("Additive\nindependent", "Additive\nshared ARD", "Plain\nMatérn 2.5", "Training\nmean"))
     for row, samples in enumerate(values):
         for column, value in enumerate(samples):
-            axis.text(column, row, f"{value:.2g}", ha="center", va="center", color="black")
+            color = "white" if heatmap.norm(np.log10(max(value, 1e-12))) > 0.65 else "black"
+            axis.text(column, row, f"{value:.2g}", ha="center", va="center", color=color)
     figure.colorbar(heatmap, ax=axis, label="log10(RMSE / global test SD), lower is better")
     axis.set_title(f"Near-optimum error after {count} global training samples\n"
                    f"Mean over {len({row['seed'] for row in rows})} instance/data pairs; no local training")
