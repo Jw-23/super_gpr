@@ -6,8 +6,12 @@ L-BFGS-B 优化。提供预测均值、标准差、完整协方差、多输出�
 ## 构建与验证
 
 需要 CMake 3.24+、Ninja、Git 和支持 C++14 的编译器。
-Eigen 3.4 与 LBFGS++ 为必要依赖。Eigen 优先使用已安装版本，否则由 CPM 获取固定版本；
+Eigen 3.4、Boost.Outcome（Boost 1.83 或更新版本）、LAPACKE/LAPACK 与 LBFGS++ 为必要依赖。
+Eigen 和 Boost 优先使用已安装版本，否则由 CPM 获取固定版本；
 LBFGS++ 的头文件和许可证已内置于 `third_party/lbfgspp`，构建时无需下载。
+Debian 和 Ubuntu 可安装 `liblapacke-dev` 与 `libopenblas-dev`，再用
+`-DBLA_VENDOR=OpenBLAS` 指定 OpenBLAS 后端。自定义安装路径可通过
+`CMAKE_PREFIX_PATH` 提供。LAPACKE 与 LAPACK 必须使用相同的整数 ABI。
 GoogleTest 和 Google Benchmark 默认启用，可分别通过
 `PROJECT_ENABLE_TESTING`、`PROJECT_ENABLE_BENCHMARKS` 关闭。
 
@@ -24,6 +28,12 @@ ctest --preset debug
 add_subdirectory(super_gpr)
 target_link_libraries(your_application PRIVATE super_gpr::super_gpr)
 ```
+
+拟合、预测、LML 和采集优化通过 Boost.Outcome v2 的 `GPRResult<T>` 返回结果，
+独立的 `minimize_lbfgsb()` 返回 `LBFGSBResult`。先检查结果，再通过 `value()`
+取成功值或通过 `error()` 取 `GPRError` 或 `OptimizationError`。
+在返回相同错误类型的函数中，可用 `BOOST_OUTCOME_TRY` 向上传递错误。
+用户提供的 Kernel 和目标函数回调抛出的异常仍原样传播。
 
 启用 clang-tidy 目标：
 
@@ -52,16 +62,16 @@ GPROptions options;
 options.normalize_y = true;
 options.optimizer_restarts = 2;
 GaussianProcessRegressor<decltype(kernel)> gp(kernel, options);
-gp.fit(x, y);
+gp.fit(x, y).value();
 
-auto prediction = gp.predict(x, true);
+auto prediction = gp.predict(x, true).value();
 // prediction.mean and standard_deviation have shape [samples, targets].
 // prediction.covariance contains one [samples, samples] matrix per target.
 
 Matrix starts(17, 1);
 starts.col(0) = Vector::LinSpaced(17, -2.0, 2.0);
 Bounds bounds{Vector::Constant(1, -2.0), Vector::Constant(1, 2.0)};
-auto next = optimize_acquisition(gp, EI(y.minCoeff(), 0.01), starts, bounds);
+auto next = optimize_acquisition(gp, EI(y.minCoeff(), 0.01), starts, bounds).value();
 // next.x is the suggested point; next.value is the positive EI value.
 ```
 
@@ -179,20 +189,21 @@ auto additive = make_additive_kernel(
 GPROptions options;
 options.normalize_y = true;
 auto gp = make_additive_gp(additive, {0.001, 1e-8, 0.5}, options);
-gp.fit(x, y); // x has four columns; y contains only the total scalar target.
-auto total = gp.predict(query, true);
+gp.fit(x, y).value(); // x has four columns; y contains only the total scalar target.
+auto total = gp.predict(query, true).value();
 
 // Use fitted component parameters for conditional component predictions.
 const auto &components = gp.kernel().left().components();
-auto first = gp.predict_component(components[0], query, true);
-auto second = gp.predict_component(components[1], query, true);
-auto cross = gp.component_cross_covariance(components[0], components[1], query);
-// total.mean = first.mean + second.mean + gp.mean_offset() per row.
+auto first = gp.predict_component(components[0], query, true).value();
+auto second = gp.predict_component(components[1], query, true).value();
+auto cross = gp.component_cross_covariance(components[0], components[1], query).value();
+// total.mean = first.mean + second.mean + gp.mean_offset().value() per row.
 ```
 
 `AdditiveKernel<K>` 保留静态子核类型，支持运行时指定组数；`SubspaceKernel<K>` 支持
 非连续、重排及组间重叠的坐标，但同一个组内不能重复索引。连续组通过 Eigen 视图访问，
-非连续组收集到局部向量。输入导数散射回原始维度，组间重叠时累加导数。
+非连续组在训练协方差构造与 LML 梯度计算中按组批量投影。逐点调用子空间核时仍使用局部向量。
+输入导数散射回原始维度，组间重叠时累加导数。
 
 原有组合子仍然适用，例如：
 
@@ -287,7 +298,8 @@ LML(theta) - 0.5 * sum_i ((theta_i - prior.mean_i) / prior.standard_deviation_i)
 
 使用 Cholesky 分解计算后验和 LML。每次 LML 梯度求值将核导数直接与
 `(alpha * alpha^T - targets * K^-1)` 收缩，不存储 `n × n × parameters` 导数张量。
-Cholesky 使用列主序，输入矩阵使用行主序，方便逐样本计算核函数。
+Cholesky 分解、方程求解及逆矩阵下三角计算由 LAPACKE 执行，使用列主序缓冲区。
+公开矩阵和向量类型仍使用 Eigen，训练输入使用行主序以方便逐样本计算核函数。
 精确 GPR 的拟合时间为 `O(n^3)`、存储为 `O(n^2)`，适用于中小规模密集问题。
 
 `GPROptions`：
@@ -305,7 +317,8 @@ Cholesky 使用列主序，输入矩阵使用行主序，方便逐样本计算�
 
 噪声方差与 scikit-learn 一样作用于归一化后的训练目标。预测时恢复目标的均值和尺度。
 `alpha` 不加入预测协方差；若 Kernel 包含 `WhiteKernel`，其噪声包含在预测方差中。
-不自动添加隐式 jitter；非正定训练协方差抛出异常，试探超参数的非正定 LML 为负无穷。
+不自动添加隐式 jitter。直接拟合或查询非正定的协方差会返回
+`GPRError::NonPositiveDefiniteCovariance`；超参数优化内部将这类试探点视为无效。
 
 `fit(X, Matrix Y)` 支持共享 Kernel 的多个独立输出，不学习输出之间的协方差。
 未 fit 时 `predict(X)` 返回零均值先验。fit 后 `log_marginal_likelihood()` 返回缓存值，
@@ -331,7 +344,7 @@ Objective objective = [](const Vector& x, Vector& gradient) {
     return x.squaredNorm();
 };
 Bounds bounds{Vector::Constant(2, -2.0), Vector::Constant(2, 2.0)};
-auto result = minimize_lbfgsb(objective, Vector::Ones(2), bounds);
+auto result = minimize_lbfgsb(objective, Vector::Ones(2), bounds).value();
 ```
 
 支持无穷边界、上下界相等的固定坐标、初值投影和零维问题。回调须返回目标值并写入梯度。

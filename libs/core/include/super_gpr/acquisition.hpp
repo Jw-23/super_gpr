@@ -106,15 +106,17 @@ using PI = ProbabilityOfImprovement;
 
 // result.value and result.gradient use the native acquisition sign, including EI/PI.
 template <class K>
-OptimizationResult optimize_acquisition(const GaussianProcessRegressor<K> &model,
-                                        const AcquisitionFunction &acquisition, const Matrix &starts,
-                                        const Bounds &bounds, const LBFGSBOptions &options = {}) {
+GPRResult<OptimizationResult> optimize_acquisition(const GaussianProcessRegressor<K> &model,
+                                                   const AcquisitionFunction &acquisition,
+                                                   const Matrix &starts, const Bounds &bounds,
+                                                   const LBFGSBOptions &options) try {
     if (starts.rows() == 0) {
-        throw std::invalid_argument("Provide at least one acquisition starting point");
+        return boost::outcome_v2::failure(GPRError::NoAcquisitionStarts);
     }
+    BOOST_OUTCOME_TRY(model.validate_point_prediction(starts.cols()));
     const double sign = acquisition.maximize() ? -1.0 : 1.0;
     auto objective = [&](const Vector &point, Vector &gradient) {
-        const auto posterior = model.predict_with_gradients(point);
+        const auto posterior = model.posterior_with_gradients(point);
         const auto value = acquisition.evaluate(posterior.mean, posterior.standard_deviation);
         gradient = sign * (value.mean_derivative * posterior.mean_gradient +
                            value.deviation_derivative * posterior.standard_deviation_gradient);
@@ -123,7 +125,11 @@ OptimizationResult optimize_acquisition(const GaussianProcessRegressor<K> &model
     OptimizationResult best;
     best.value = std::numeric_limits<double>::infinity();
     for (Eigen::Index row = 0; row < starts.rows(); ++row) {
-        auto result = minimize_lbfgsb(objective, starts.row(row).transpose(), bounds, options);
+        auto outcome = minimize_lbfgsb(objective, starts.row(row).transpose(), bounds, options);
+        if (!outcome) {
+            return boost::outcome_v2::failure(detail::optimizer_error(outcome.error()));
+        }
+        auto &result = outcome.value();
         if (result.value < best.value) {
             best = std::move(result);
         }
@@ -131,6 +137,8 @@ OptimizationResult optimize_acquisition(const GaussianProcessRegressor<K> &model
     best.value *= sign;
     best.gradient *= sign;
     return best;
+} catch (const detail::InvalidKernelInput &) {
+    return boost::outcome_v2::failure(GPRError::InvalidKernelInput);
 }
 
 } // namespace super_gpr

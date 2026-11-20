@@ -101,6 +101,30 @@ struct IsKernel<
             decltype(std::declval<const K &>().parameter_count()),
             decltype(std::declval<K &>().set_theta(std::declval<Point>()))>> : std::true_type {};
 
+namespace detail {
+
+class InvalidKernelInput : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
+// Opt in library kernels by exact type so user subclasses with custom value or
+// gradient methods continue to use their original interface.
+template <class K> struct ValueGradient {
+    static double evaluate(const K &kernel, Point x, Point y, bool same, Gradient out) {
+        kernel.gradient(x, y, same, out);
+        return kernel.value(x, y, same);
+    }
+};
+
+template <class K> struct FusedValueGradient {
+    static double evaluate(const K &kernel, Point x, Point y, bool same, Gradient out) {
+        return kernel.value_and_gradient(x, y, same, out);
+    }
+};
+
+} // namespace detail
+
 class ConstantKernel : public ParameterSet {
 public:
     explicit ConstantKernel(Parameter constant = {}) : ParameterSet({constant}) {}
@@ -141,30 +165,49 @@ protected:
         return parameter(stored_parameter_count() == 1 ? 0 : static_cast<std::size_t>(axis));
     }
     double squared_distance(Point x, Point y) const {
-        if (stored_parameter_count() != 1 && stored_parameter_count() != static_cast<std::size_t>(x.size())) {
-            throw std::invalid_argument("ARD length scales must match the feature count");
+        if (stored_parameter_count() == 1) {
+            return ((x - y) / parameter(0)).squaredNorm();
         }
+        check_ard_dimension(x.size());
         double result = 0.0;
         for (Eigen::Index axis = 0; axis < x.size(); ++axis) {
-            const double delta = (x[axis] - y[axis]) / scale(axis);
+            const double delta = (x[axis] - y[axis]) / parameter(static_cast<std::size_t>(axis));
             result += delta * delta;
         }
         return result;
     }
-    void radial_gradient(Point x, Point y, double factor, Gradient out) const {
+    double squared_distance_and_gradient(Point x, Point y, Gradient out) const {
         Eigen::Index offset = 0;
         if (stored_parameter_count() == 1) {
-            write_gradient(0, factor * squared_distance(x, y), out, offset);
-        } else {
-            for (Eigen::Index axis = 0; axis < x.size(); ++axis) {
-                const double delta = (x[axis] - y[axis]) / scale(axis);
-                write_gradient(static_cast<std::size_t>(axis), factor * delta * delta, out, offset);
-            }
+            const double distance = squared_distance(x, y);
+            write_gradient(0, distance, out, offset);
+            return distance;
         }
+        check_ard_dimension(x.size());
+        double distance = 0.0;
+        for (Eigen::Index axis = 0; axis < x.size(); ++axis) {
+            const auto index = static_cast<std::size_t>(axis);
+            const double delta = (x[axis] - y[axis]) / parameter(index);
+            const double square = delta * delta;
+            distance += square;
+            write_gradient(index, square, out, offset);
+        }
+        return distance;
+    }
+    void radial_gradient(Point x, Point y, double factor, Gradient out) const {
+        squared_distance_and_gradient(x, y, out);
+        out *= factor;
     }
     void radial_input_gradient(Point x, Point y, double factor, Gradient out) const {
         for (Eigen::Index axis = 0; axis < x.size(); ++axis) {
             out[axis] = -factor * (x[axis] - y[axis]) / (scale(axis) * scale(axis));
+        }
+    }
+
+private:
+    void check_ard_dimension(Eigen::Index dimension) const {
+        if (stored_parameter_count() != static_cast<std::size_t>(dimension)) {
+            throw detail::InvalidKernelInput("ARD length scales must match the feature count");
         }
     }
 };
@@ -175,7 +218,12 @@ public:
     explicit RBF(std::vector<Parameter> scales) : RadialKernel(std::move(scales)) {}
     double value(Point x, Point y, bool /*same*/) const { return std::exp(-0.5 * squared_distance(x, y)); }
     void gradient(Point x, Point y, bool same, Gradient out) const {
-        radial_gradient(x, y, value(x, y, same), out);
+        value_and_gradient(x, y, same, out);
+    }
+    double value_and_gradient(Point x, Point y, bool /*same*/, Gradient out) const {
+        const double kernel_value = std::exp(-0.5 * squared_distance_and_gradient(x, y, out));
+        out *= kernel_value;
+        return kernel_value;
     }
     void input_gradient(Point x, Point y, Gradient out) const {
         radial_input_gradient(x, y, value(x, y, false), out);
@@ -190,25 +238,18 @@ public:
         check_nu();
     }
     double value(Point x, Point y, bool /*same*/) const {
-        const double distance = std::sqrt(squared_distance(x, y));
-        if (nu_ == 0.5) {
-            return std::exp(-distance);
-        }
-        if (nu_ == 1.5) {
-            const double r = std::sqrt(3.0) * distance;
-            return (1.0 + r) * std::exp(-r);
-        }
-        if (nu_ == 2.5) {
-            const double r = std::sqrt(5.0) * distance;
-            return (1.0 + r + r * r / 3.0) * std::exp(-r);
-        }
-        return std::exp(-0.5 * distance * distance);
+        return radial_value(std::sqrt(squared_distance(x, y))).value;
     }
-    void gradient(Point x, Point y, bool /*same*/, Gradient out) const {
-        radial_gradient(x, y, factor(x, y), out);
+    void gradient(Point x, Point y, bool same, Gradient out) const {
+        value_and_gradient(x, y, same, out);
+    }
+    double value_and_gradient(Point x, Point y, bool /*same*/, Gradient out) const {
+        const auto radial = radial_value(std::sqrt(squared_distance_and_gradient(x, y, out)));
+        out *= radial.gradient_factor;
+        return radial.value;
     }
     void input_gradient(Point x, Point y, Gradient out) const {
-        radial_input_gradient(x, y, factor(x, y), out);
+        radial_input_gradient(x, y, radial_value(std::sqrt(squared_distance(x, y))).gradient_factor, out);
     }
 
 private:
@@ -217,22 +258,36 @@ private:
             throw std::invalid_argument("Matern supports nu = 0.5, 1.5, 2.5, or infinity");
         }
     }
-    double factor(Point x, Point y) const {
-        const double distance = std::sqrt(squared_distance(x, y));
+    struct RadialValue {
+        double value;
+        double gradient_factor;
+    };
+
+    RadialValue radial_value(double distance) const {
         if (nu_ == 0.5) {
-            return distance == 0.0 ? 0.0 : std::exp(-distance) / distance;
+            const double decay = std::exp(-distance);
+            return {decay, distance == 0.0 ? 0.0 : decay / distance};
         }
         if (nu_ == 1.5) {
-            return 3.0 * std::exp(-std::sqrt(3.0) * distance);
+            const double r = std::sqrt(3.0) * distance;
+            const double decay = std::exp(-r);
+            return {(1.0 + r) * decay, 3.0 * decay};
         }
         if (nu_ == 2.5) {
             const double r = std::sqrt(5.0) * distance;
-            return (5.0 / 3.0) * (1.0 + r) * std::exp(-r);
+            const double decay = std::exp(-r);
+            return {(1.0 + r + r * r / 3.0) * decay, (5.0 / 3.0) * (1.0 + r) * decay};
         }
-        return std::exp(-0.5 * distance * distance);
+        const double decay = std::exp(-0.5 * distance * distance);
+        return {decay, decay};
     }
     double nu_;
 };
+
+namespace detail {
+template <> struct ValueGradient<RBF> : FusedValueGradient<RBF> {};
+template <> struct ValueGradient<Matern> : FusedValueGradient<Matern> {};
+} // namespace detail
 
 class RationalQuadratic : public ParameterSet {
 public:
@@ -342,33 +397,68 @@ public:
         return Operation::apply(left_.value(x, y, same), right_.value(x, y, same));
     }
     void gradient(Point x, Point y, bool same, Gradient out) const {
+        gradient_impl(x, y, same, out, std::is_same<Operation, AddOperation>{});
+    }
+    double value_and_gradient(Point x, Point y, bool same, Gradient out) const {
         auto left = out.head(left_.parameter_count());
         auto right = out.tail(right_.parameter_count());
-        left_.gradient(x, y, same, left);
-        right_.gradient(x, y, same, right);
-        const double a = left_.value(x, y, same);
-        const double b = right_.value(x, y, same);
+        const double a = detail::ValueGradient<K1>::evaluate(left_, x, y, same, left);
+        const double b = detail::ValueGradient<K2>::evaluate(right_, x, y, same, right);
         left *= Operation::left_factor(a, b);
         right *= Operation::right_factor(a, b);
+        return Operation::apply(a, b);
     }
     void input_gradient(Point x, Point y, Gradient out) const {
-        Vector scratch(x.size());
-        left_.input_gradient(x, y, out);
-        right_.input_gradient(x, y, scratch);
-        const double a = left_.value(x, y, false);
-        const double b = right_.value(x, y, false);
-        out = Operation::left_factor(a, b) * out + Operation::right_factor(a, b) * scratch;
+        spatial_gradient(x, y, false, out,
+                         [&](const auto &kernel, Gradient target) { kernel.input_gradient(x, y, target); });
     }
     void diagonal_gradient(Point x, Gradient out) const {
-        Vector scratch(x.size());
-        left_.diagonal_gradient(x, out);
-        right_.diagonal_gradient(x, scratch);
-        const double a = left_.value(x, x, true);
-        const double b = right_.value(x, x, true);
-        out = Operation::left_factor(a, b) * out + Operation::right_factor(a, b) * scratch;
+        spatial_gradient(x, x, true, out,
+                         [&](const auto &kernel, Gradient target) { kernel.diagonal_gradient(x, target); });
     }
 
 private:
+    template <class Derivative>
+    void spatial_gradient(Point x, Point y, bool same, Gradient out, Derivative derivative) const {
+        constexpr bool is_sum = std::is_same<Operation, AddOperation>::value;
+        constexpr bool is_product = std::is_same<Operation, MultiplyOperation>::value;
+        constexpr bool left_constant =
+            std::is_same<K1, ConstantKernel>::value || std::is_same<K1, WhiteKernel>::value;
+        constexpr bool right_constant =
+            std::is_same<K2, ConstantKernel>::value || std::is_same<K2, WhiteKernel>::value;
+        if ((is_sum || is_product) && left_constant) {
+            derivative(right_, out);
+            if (is_product) {
+                out *= left_.value(x, y, same);
+            }
+            return;
+        }
+        derivative(left_, out);
+        if ((is_sum || is_product) && right_constant) {
+            if (is_product) {
+                out *= right_.value(x, y, same);
+            }
+            return;
+        }
+        Vector scratch(out.size());
+        derivative(right_, scratch);
+        if (is_sum) {
+            out += scratch;
+            return;
+        }
+        const double a = left_.value(x, y, same);
+        const double b = right_.value(x, y, same);
+        out = Operation::left_factor(a, b) * out + Operation::right_factor(a, b) * scratch;
+    }
+
+    void gradient_impl(Point x, Point y, bool same, Gradient out, std::true_type) const {
+        left_.gradient(x, y, same, out.head(left_.parameter_count()));
+        right_.gradient(x, y, same, out.tail(right_.parameter_count()));
+    }
+    void gradient_impl(Point x, Point y, bool same, Gradient out, std::false_type) const {
+        value_and_gradient(x, y, same, out);
+    }
+
     K1 left_;
     K2 right_;
 };
@@ -386,6 +476,13 @@ public:
 
 template <class K1, class K2> using Add = AddKernel<K1, K2>;
 template <class K1, class K2> using Multiply = Multiple<K1, K2>;
+
+namespace detail {
+template <class K1, class K2> struct ValueGradient<AddKernel<K1, K2>>
+    : FusedValueGradient<AddKernel<K1, K2>> {};
+template <class K1, class K2> struct ValueGradient<Multiple<K1, K2>>
+    : FusedValueGradient<Multiple<K1, K2>> {};
+} // namespace detail
 
 template <class K1, class K2, std::enable_if_t<IsKernel<K1>::value && IsKernel<K2>::value, int> = 0>
 AddKernel<K1, K2> operator+(K1 left, K2 right) {

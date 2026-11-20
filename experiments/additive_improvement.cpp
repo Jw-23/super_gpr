@@ -78,22 +78,23 @@ FitResult fit_kernel(K kernel, const GPROptions &options, const Matrix &x, const
                      const Matrix &query) {
     GaussianProcessRegressor<K> model(std::move(kernel), options);
     const auto start = std::chrono::steady_clock::now();
-    model.fit(x, y);
+    model.fit(x, y).value();
     FitResult result;
     result.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    result.prediction = model.predict(query).mean.col(0);
+    result.prediction = model.predict(query).value().mean.col(0);
     result.train_rmse =
-        std::sqrt((model.predict(x).mean.col(0) - y).squaredNorm() / static_cast<double>(y.size()));
+        std::sqrt((model.predict(x).value().mean.col(0) - y).squaredNorm() / static_cast<double>(y.size()));
     result.parameters = model.kernel().theta().array().exp();
     const double noise = result.parameters[result.parameters.size() - 1];
     result.noise_std = std::sqrt(noise * (y.array() - y.mean()).square().mean());
     Matrix covariance = super_gpr::covariance(model.kernel(), x);
     covariance.diagonal().array() += options.alpha;
-    const Eigen::LLT<Eigen::MatrixXd> factor(covariance);
-    const Matrix inverse = factor.solve(Matrix::Identity(x.rows(), x.rows()));
+    detail::Cholesky factor;
+    factor.compute(std::move(covariance)).value();
+    const Eigen::MatrixXd inverse = std::move(factor).take_inverse_lower();
     result.effective_df = static_cast<double>(x.rows()) - (noise + options.alpha) * inverse.trace();
-    result.lml = model.log_marginal_likelihood();
-    result.objective = model.log_posterior();
+    result.lml = model.log_marginal_likelihood().value();
+    result.objective = model.log_posterior().value();
     for (const auto &optimization : model.optimization_results()) {
         result.iterations += optimization.iterations;
         result.evaluations += optimization.evaluations;

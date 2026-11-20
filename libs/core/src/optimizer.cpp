@@ -1,6 +1,5 @@
 #include <LBFGSB.h>
 #include <cmath>
-#include <exception>
 #include <limits>
 #include <stdexcept>
 #include <super_gpr/optimizer.hpp>
@@ -20,11 +19,11 @@ std::vector<Eigen::Index> active_coordinates(const Bounds &bounds) {
 }
 } // namespace
 
-OptimizationResult minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
-                                   const LBFGSBOptions &options) {
+LBFGSBResult minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
+                             const LBFGSBOptions &options) {
     if (bounds.lower.size() != initial.size() || bounds.upper.size() != initial.size() ||
         (bounds.lower.array() > bounds.upper.array()).any()) {
-        throw std::invalid_argument("Bounds must match x and satisfy lower <= upper");
+        return boost::outcome_v2::failure(OptimizationError::InvalidBounds);
     }
     initial = initial.cwiseMax(bounds.lower).cwiseMin(bounds.upper);
     const auto active = active_coordinates(bounds);
@@ -34,6 +33,9 @@ OptimizationResult minimize_lbfgsb(const Objective &objective, Vector initial, c
     if (active.empty()) {
         result.value = objective(result.x, result.gradient);
         result.evaluations = 1;
+        if (!std::isfinite(result.value) || !result.gradient.allFinite()) {
+            return boost::outcome_v2::failure(OptimizationError::NoFiniteObjective);
+        }
         return result;
     }
     const auto size = static_cast<Eigen::Index>(active.size());
@@ -49,18 +51,14 @@ OptimizationResult minimize_lbfgsb(const Objective &objective, Vector initial, c
     Vector point = initial;
     Vector full_gradient(initial.size());
     double best = std::numeric_limits<double>::infinity();
-    std::exception_ptr callback_error;
+    bool in_callback = false;
     auto evaluate = [&](const Vector &x, Vector &gradient) {
         for (Eigen::Index index = 0; index < size; ++index) {
             point[active[static_cast<std::size_t>(index)]] = x[index];
         }
-        double value = 0.0;
-        try {
-            value = objective(point, full_gradient);
-        } catch (...) {
-            callback_error = std::current_exception();
-            throw;
-        }
+        in_callback = true;
+        const double value = objective(point, full_gradient);
+        in_callback = false;
         ++result.evaluations;
         gradient.resize(size);
         for (Eigen::Index index = 0; index < size; ++index) {
@@ -82,22 +80,27 @@ OptimizationResult minimize_lbfgsb(const Objective &objective, Vector initial, c
     parameters.epsilon_rel = 0.0;
     parameters.past = options.function_tolerance > 0.0 ? 1 : 0;
     parameters.delta = options.function_tolerance;
-    LBFGSpp::LBFGSBSolver<double> solver(parameters);
     double value = 0.0;
     try {
+        LBFGSpp::LBFGSBSolver<double> solver(parameters);
         result.iterations = solver.minimize(evaluate, reduced, value, lower, upper);
+    } catch (const std::invalid_argument &) {
+        if (in_callback) {
+            throw;
+        }
+        return boost::outcome_v2::failure(OptimizationError::InvalidOptions);
     } catch (const std::runtime_error &) {
-        if (callback_error) {
-            std::rethrow_exception(callback_error);
+        if (in_callback) {
+            throw;
         }
         if (!std::isfinite(best)) {
-            throw;
+            return boost::outcome_v2::failure(OptimizationError::NoFiniteObjective);
         }
         result.status = OptimizationStatus::LineSearchFailure;
         return result;
     }
     if (!std::isfinite(best)) {
-        throw std::runtime_error("Objective has no finite value and gradient");
+        return boost::outcome_v2::failure(OptimizationError::NoFiniteObjective);
     }
     const double projected =
         ((result.x - result.gradient).cwiseMax(bounds.lower).cwiseMin(bounds.upper) - result.x)

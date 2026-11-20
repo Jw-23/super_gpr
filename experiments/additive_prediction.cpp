@@ -18,9 +18,9 @@ void fit_and_report(const std::string &function, const std::string &family, cons
     options.optimizer.function_tolerance = 1e-8;
     GaussianProcessRegressor<K> model(kernel, options);
     const auto started = std::chrono::steady_clock::now();
-    model.fit(data.train_x, data.train_y);
+    model.fit(data.train_x, data.train_y).value();
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    const auto prediction = model.predict(data.test_x);
+    const auto prediction = model.predict(data.test_x).value();
     const Vector residual = prediction.mean.col(0) - data.test_y;
     const double squared_error = residual.squaredNorm();
     const double total_variance = (data.test_y.array() - data.test_y.mean()).square().sum();
@@ -33,13 +33,13 @@ void fit_and_report(const std::string &function, const std::string &family, cons
         evaluations += result.evaluations;
         converged = converged && result.converged();
     }
-    const double initial_lml = model.log_marginal_likelihood(kernel.theta()).value;
+    const double initial_lml = model.log_marginal_likelihood(kernel.theta()).value().value;
     std::cout << function << ',' << family << ',' << data.train_x.cols() << ',' << data.train_x.rows() << ','
               << data.test_x.rows() << ',' << seed << ',' << name << ',' << model.kernel().parameter_count()
               << ',' << rmse << ',' << std::sqrt(squared_error / total_variance) << ','
               << 1.0 - squared_error / total_variance << ',' << seconds << ',' << iterations << ','
               << evaluations << ',' << converged << ',' << initial_lml << ','
-              << model.log_marginal_likelihood() << ',';
+              << model.log_marginal_likelihood().value() << ',';
     const Vector parameters = model.kernel().theta().array().exp();
     for (Eigen::Index index = 0; index < parameters.size(); ++index) {
         if (index != 0) {

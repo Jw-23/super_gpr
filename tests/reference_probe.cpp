@@ -46,11 +46,11 @@ void report_kernel(const std::string &name, const BoxedKernel &kernel) {
 void report_model(const std::string &name, const BoxedKernel &kernel, const Matrix &x, const Matrix &y,
                   const Matrix &query, const GPROptions &options) {
     GaussianProcessRegressor<BoxedKernel> model(kernel, options);
-    model.fit(x, y);
+    model.fit(x, y).value();
     emit(name + ".theta", model.kernel().theta());
-    emit_scalar(name + ".lml", model.log_marginal_likelihood());
-    emit(name + ".gradient", model.log_marginal_likelihood(model.kernel().theta()).gradient);
-    const auto result = model.predict(query, true);
+    emit_scalar(name + ".lml", model.log_marginal_likelihood().value());
+    emit(name + ".gradient", model.log_marginal_likelihood(model.kernel().theta()).value().gradient);
+    const auto result = model.predict(query, true).value();
     emit(name + ".mean", result.mean);
     emit(name + ".std", result.standard_deviation);
     for (std::size_t output = 0; output < result.covariance.size(); ++output) {
@@ -63,12 +63,12 @@ int main() try {
     using namespace super_gpr;
     std::cout << std::setprecision(17);
     const std::vector<std::pair<std::string, BoxedKernel>> kernels{
-        {"rbf", BoxedKernel(RBF({0.7}))},
+        {"rbf", BoxedKernel(RBF(Parameter{0.7}))},
         {"ard", BoxedKernel(RBF(std::vector<Parameter>{{0.7}, {1.3}}))},
-        {"matern05", BoxedKernel(Matern({0.7}, 0.5))},
-        {"matern15", BoxedKernel(Matern({0.7}, 1.5))},
+        {"matern05", BoxedKernel(Matern(Parameter{0.7}, 0.5))},
+        {"matern15", BoxedKernel(Matern(Parameter{0.7}, 1.5))},
         {"matern25", BoxedKernel(Matern(std::vector<Parameter>{{0.7}, {1.3}}, 2.5))},
-        {"materninf", BoxedKernel(Matern({0.7}, std::numeric_limits<double>::infinity()))},
+        {"materninf", BoxedKernel(Matern(Parameter{0.7}, std::numeric_limits<double>::infinity()))},
         {"rq", BoxedKernel(RationalQuadratic({0.8}, {1.4}))},
         {"periodic", BoxedKernel(ExpSineSquared({0.8}, {1.7}))},
         {"dot", BoxedKernel(DotProduct({0.6}))},
