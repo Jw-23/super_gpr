@@ -103,6 +103,11 @@ struct IsKernel<
 
 namespace detail {
 
+class InvalidKernelInput : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
 // Opt in library kernels by exact type so user subclasses with custom value or
 // gradient methods continue to use their original interface.
 template <class K> struct ValueGradient {
@@ -202,7 +207,7 @@ protected:
 private:
     void check_ard_dimension(Eigen::Index dimension) const {
         if (stored_parameter_count() != static_cast<std::size_t>(dimension)) {
-            throw std::invalid_argument("ARD length scales must match the feature count");
+            throw detail::InvalidKernelInput("ARD length scales must match the feature count");
         }
     }
 };

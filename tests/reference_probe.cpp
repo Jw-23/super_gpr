@@ -46,11 +46,11 @@ void report_kernel(const std::string &name, const BoxedKernel &kernel) {
 void report_model(const std::string &name, const BoxedKernel &kernel, const Matrix &x, const Matrix &y,
                   const Matrix &query, const GPROptions &options) {
     GaussianProcessRegressor<BoxedKernel> model(kernel, options);
-    model.fit(x, y);
+    model.fit(x, y).value();
     emit(name + ".theta", model.kernel().theta());
-    emit_scalar(name + ".lml", model.log_marginal_likelihood());
-    emit(name + ".gradient", model.log_marginal_likelihood(model.kernel().theta()).gradient);
-    const auto result = model.predict(query, true);
+    emit_scalar(name + ".lml", model.log_marginal_likelihood().value());
+    emit(name + ".gradient", model.log_marginal_likelihood(model.kernel().theta()).value().gradient);
+    const auto result = model.predict(query, true).value();
     emit(name + ".mean", result.mean);
     emit(name + ".std", result.standard_deviation);
     for (std::size_t output = 0; output < result.covariance.size(); ++output) {

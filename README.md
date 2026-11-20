@@ -29,12 +29,11 @@ add_subdirectory(super_gpr)
 target_link_libraries(your_application PRIVATE super_gpr::super_gpr)
 ```
 
-`fit(X, y)` 保留原有异常接口。需要按结果处理输入校验和协方差分解失败时，
-可调用 `try_fit(X, y)` 并检查 `result.error()` 返回的 `GPRError`。
-`try_log_marginal_likelihood(theta)` 同样返回结果，能区分模型未拟合、
-参数长度错误和协方差分解失败。用户提供的 Kernel 回调异常仍原样传播。
-`try_minimize_lbfgsb()` 对无效边界或无有限目标值及梯度返回 `OptimizationError`。
-旧的 `minimize_lbfgsb()` 仍抛出相应异常，用户目标函数抛出的异常原样传播。
+拟合、预测、LML 和采集优化通过 Boost.Outcome v2 的 `GPRResult<T>` 返回结果，
+独立的 `minimize_lbfgsb()` 返回 `LBFGSBResult`。先检查结果，再通过 `value()`
+取成功值或通过 `error()` 取 `GPRError` 或 `OptimizationError`。
+在返回相同错误类型的函数中，可用 `BOOST_OUTCOME_TRY` 向上传递错误。
+用户提供的 Kernel 和目标函数回调抛出的异常仍原样传播。
 
 启用 clang-tidy 目标：
 
@@ -63,16 +62,16 @@ GPROptions options;
 options.normalize_y = true;
 options.optimizer_restarts = 2;
 GaussianProcessRegressor<decltype(kernel)> gp(kernel, options);
-gp.fit(x, y);
+gp.fit(x, y).value();
 
-auto prediction = gp.predict(x, true);
+auto prediction = gp.predict(x, true).value();
 // prediction.mean and standard_deviation have shape [samples, targets].
 // prediction.covariance contains one [samples, samples] matrix per target.
 
 Matrix starts(17, 1);
 starts.col(0) = Vector::LinSpaced(17, -2.0, 2.0);
 Bounds bounds{Vector::Constant(1, -2.0), Vector::Constant(1, 2.0)};
-auto next = optimize_acquisition(gp, EI(y.minCoeff(), 0.01), starts, bounds);
+auto next = optimize_acquisition(gp, EI(y.minCoeff(), 0.01), starts, bounds).value();
 // next.x is the suggested point; next.value is the positive EI value.
 ```
 
@@ -190,15 +189,15 @@ auto additive = make_additive_kernel(
 GPROptions options;
 options.normalize_y = true;
 auto gp = make_additive_gp(additive, {0.001, 1e-8, 0.5}, options);
-gp.fit(x, y); // x has four columns; y contains only the total scalar target.
-auto total = gp.predict(query, true);
+gp.fit(x, y).value(); // x has four columns; y contains only the total scalar target.
+auto total = gp.predict(query, true).value();
 
 // Use fitted component parameters for conditional component predictions.
 const auto &components = gp.kernel().left().components();
-auto first = gp.predict_component(components[0], query, true);
-auto second = gp.predict_component(components[1], query, true);
-auto cross = gp.component_cross_covariance(components[0], components[1], query);
-// total.mean = first.mean + second.mean + gp.mean_offset() per row.
+auto first = gp.predict_component(components[0], query, true).value();
+auto second = gp.predict_component(components[1], query, true).value();
+auto cross = gp.component_cross_covariance(components[0], components[1], query).value();
+// total.mean = first.mean + second.mean + gp.mean_offset().value() per row.
 ```
 
 `AdditiveKernel<K>` 保留静态子核类型，支持运行时指定组数；`SubspaceKernel<K>` 支持
@@ -318,7 +317,8 @@ Cholesky 分解、方程求解及逆矩阵下三角计算由 LAPACKE 执行，�
 
 噪声方差与 scikit-learn 一样作用于归一化后的训练目标。预测时恢复目标的均值和尺度。
 `alpha` 不加入预测协方差；若 Kernel 包含 `WhiteKernel`，其噪声包含在预测方差中。
-不自动添加隐式 jitter；非正定训练协方差抛出异常，试探超参数的非正定 LML 为负无穷。
+不自动添加隐式 jitter。直接拟合或查询非正定的协方差会返回
+`GPRError::NonPositiveDefiniteCovariance`；超参数优化内部将这类试探点视为无效。
 
 `fit(X, Matrix Y)` 支持共享 Kernel 的多个独立输出，不学习输出之间的协方差。
 未 fit 时 `predict(X)` 返回零均值先验。fit 后 `log_marginal_likelihood()` 返回缓存值，
@@ -344,7 +344,7 @@ Objective objective = [](const Vector& x, Vector& gradient) {
     return x.squaredNorm();
 };
 Bounds bounds{Vector::Constant(2, -2.0), Vector::Constant(2, 2.0)};
-auto result = minimize_lbfgsb(objective, Vector::Ones(2), bounds);
+auto result = minimize_lbfgsb(objective, Vector::Ones(2), bounds).value();
 ```
 
 支持无穷边界、上下界相等的固定坐标、初值投影和零维问题。回调须返回目标值并写入梯度。

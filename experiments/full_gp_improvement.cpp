@@ -126,18 +126,19 @@ Fit fit_kernel(const K &kernel, const Observations &training, const Matrix &quer
             initial.set_theta(theta);
         }
         GaussianProcessRegressor<K> model(initial, options);
-        model.fit(training.x, target);
+        model.fit(training.x, target).value();
         const auto &optimization = model.optimization_results().front();
         result.iterations += optimization.iterations;
         result.evaluations += optimization.evaluations;
         result.converged_starts += static_cast<int>(optimization.converged());
         ++result.starts;
-        if (model.log_marginal_likelihood() > result.lml) {
-            result.lml = model.log_marginal_likelihood();
+        const double lml = model.log_marginal_likelihood().value();
+        if (lml > result.lml) {
+            result.lml = lml;
             result.parameters = model.kernel().theta().array().exp();
             result.best_converged = optimization.converged();
-            result.prediction = warp.mean(model.predict(query));
-            const Vector train_error = warp.mean(model.predict(training.x)) - training.y;
+            result.prediction = warp.mean(model.predict(query).value());
+            const Vector train_error = warp.mean(model.predict(training.x).value()) - training.y;
             result.train_rmse = std::sqrt(train_error.squaredNorm() / static_cast<double>(target.size()));
         }
     }

@@ -19,20 +19,8 @@ std::vector<Eigen::Index> active_coordinates(const Bounds &bounds) {
 }
 } // namespace
 
-OptimizationResult minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
-                                   const LBFGSBOptions &options) {
-    auto result = try_minimize_lbfgsb(objective, std::move(initial), bounds, options);
-    if (result) {
-        return std::move(result).value();
-    }
-    if (result.error() == OptimizationError::InvalidBounds) {
-        throw std::invalid_argument("Bounds must match x and satisfy lower <= upper");
-    }
-    throw NoFiniteObjective("Objective has no finite value and gradient");
-}
-
-LBFGSBResult try_minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
-                                const LBFGSBOptions &options) {
+LBFGSBResult minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
+                             const LBFGSBOptions &options) {
     if (bounds.lower.size() != initial.size() || bounds.upper.size() != initial.size() ||
         (bounds.lower.array() > bounds.upper.array()).any()) {
         return boost::outcome_v2::failure(OptimizationError::InvalidBounds);
@@ -92,10 +80,15 @@ LBFGSBResult try_minimize_lbfgsb(const Objective &objective, Vector initial, con
     parameters.epsilon_rel = 0.0;
     parameters.past = options.function_tolerance > 0.0 ? 1 : 0;
     parameters.delta = options.function_tolerance;
-    LBFGSpp::LBFGSBSolver<double> solver(parameters);
     double value = 0.0;
     try {
+        LBFGSpp::LBFGSBSolver<double> solver(parameters);
         result.iterations = solver.minimize(evaluate, reduced, value, lower, upper);
+    } catch (const std::invalid_argument &) {
+        if (in_callback) {
+            throw;
+        }
+        return boost::outcome_v2::failure(OptimizationError::InvalidOptions);
     } catch (const std::runtime_error &) {
         if (in_callback) {
             throw;

@@ -2,7 +2,6 @@
 
 #include <boost/outcome/std_result.hpp>
 #include <functional>
-#include <stdexcept>
 #include <super_gpr/types.hpp>
 
 namespace super_gpr {
@@ -16,11 +15,6 @@ struct LBFGSBOptions {
 };
 
 enum class OptimizationStatus { ProjectedGradient, FunctionTolerance, IterationLimit, LineSearchFailure };
-
-class NoFiniteObjective : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
 
 struct OptimizationResult {
     Vector x;
@@ -36,14 +30,12 @@ struct OptimizationResult {
     }
 };
 
-enum class OptimizationError { InvalidBounds, NoFiniteObjective };
+enum class OptimizationError { InvalidBounds, InvalidOptions, NoFiniteObjective };
 using LBFGSBResult = boost::outcome_v2::std_checked<OptimizationResult, OptimizationError>;
 
 // Minimize f(x). The callback must write df/dx into gradient.
 using Objective = std::function<double(const Vector &, Vector &)>;
-LBFGSBResult try_minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
-                                const LBFGSBOptions &options = {});
-OptimizationResult minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
-                                   const LBFGSBOptions &options = {});
+LBFGSBResult minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
+                             const LBFGSBOptions &options = {});
 
 } // namespace super_gpr

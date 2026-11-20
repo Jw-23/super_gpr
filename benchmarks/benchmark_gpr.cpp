@@ -23,8 +23,8 @@ void fit_fixed_kernel(benchmark::State &state) {
     GaussianProcessRegressor<RBF> model(RBF{}, options);
     for (auto iteration : state) {
         (void)iteration;
-        model.fit(x, y);
-        benchmark::DoNotOptimize(model.log_marginal_likelihood());
+        model.fit(x, y).value();
+        benchmark::DoNotOptimize(model.log_marginal_likelihood().value());
     }
     state.SetComplexityN(count);
 }
@@ -61,11 +61,11 @@ void likelihood_gradient(benchmark::State &state) {
     options.optimize = false;
     auto kernel = ConstantKernel{} * RBF{} + WhiteKernel({0.01});
     GaussianProcessRegressor<decltype(kernel)> model(kernel, options);
-    model.fit(x, y);
+    model.fit(x, y).value();
     const Vector theta = kernel.theta();
     for (auto iteration : state) {
         (void)iteration;
-        auto result = model.log_marginal_likelihood(theta);
+        auto result = model.log_marginal_likelihood(theta).value();
         benchmark::DoNotOptimize(result.value);
         benchmark::DoNotOptimize(result.gradient.data());
     }
@@ -103,11 +103,11 @@ template <bool Strided> void shared_additive_likelihood_gradient(benchmark::Stat
     GPROptions options;
     options.optimize = false;
     auto model = make_additive_gp(make_shared_additive_kernel(groups, component), {0.001, 1e-8, 0.5}, options);
-    model.fit(x, y);
+    model.fit(x, y).value();
     const Vector theta = model.kernel().theta();
     for (auto iteration : state) {
         (void)iteration;
-        auto result = model.log_marginal_likelihood(theta);
+        auto result = model.log_marginal_likelihood(theta).value();
         benchmark::DoNotOptimize(result.value);
         benchmark::DoNotOptimize(result.gradient.data());
     }

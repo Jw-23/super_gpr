@@ -80,7 +80,7 @@ private:
     }
     void check_features(Point point) const {
         if (point.size() < required_features_) {
-            throw std::invalid_argument("Subspace feature exceeds input dimension");
+            throw detail::InvalidKernelInput("Subspace feature exceeds input dimension");
         }
     }
     Vector project(Point point) const {
@@ -134,7 +134,7 @@ private:
     }
     template <class Function> void with_training_points(detail::TrainingPoints x, Function function) const {
         if (x.cols() < required_features_) {
-            throw std::invalid_argument("Subspace feature exceeds input dimension");
+            throw detail::InvalidKernelInput("Subspace feature exceeds input dimension");
         }
         if (contiguous_) {
             function(x.middleCols(features_.front(), dimension()));

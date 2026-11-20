@@ -105,11 +105,11 @@ void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, 
     GaussianProcessRegressor<K> model(kernel, options);
     std::cerr << "Starting seed=" << seed << " n=" << count << " model=" << name << '\n';
     const auto start = std::chrono::steady_clock::now();
-    model.fit(x, y);
+    model.fit(x, y).value();
     const double fit_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     const auto predict_start = std::chrono::steady_clock::now();
-    const auto prediction = model.predict(data.test_x);
+    const auto prediction = model.predict(data.test_x).value();
     const double predict_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - predict_start).count();
     const Vector residual = prediction.mean.col(0) - data.test_y;
@@ -124,7 +124,7 @@ void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, 
     const auto quantile_index =
         static_cast<std::size_t>(std::ceil(0.95 * static_cast<double>(absolute.size()))) - 1;
     const double train_rmse =
-        std::sqrt((model.predict(x).mean.col(0) - y).squaredNorm() / static_cast<double>(count));
+        std::sqrt((model.predict(x).value().mean.col(0) - y).squaredNorm() / static_cast<double>(count));
     const Vector parameters = model.kernel().theta().array().exp();
     const double noise_std =
         std::sqrt(parameters[parameters.size() - 1] * (y.array() - y.mean()).square().mean());
@@ -141,7 +141,7 @@ void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, 
               << 1.0 - error / variance << ',' << residual.cwiseAbs().mean() << ','
               << absolute[quantile_index] << ',' << absolute.back() << ',' << train_rmse << ',' << noise_std
               << ',' << fit_seconds << ',' << predict_seconds << ',' << iterations << ',' << evaluations
-              << ',' << converged << ',' << model.log_marginal_likelihood() << ',' << training_checksum << ','
+              << ',' << converged << ',' << model.log_marginal_likelihood().value() << ',' << training_checksum << ','
               << test_checksum << ',';
     for (Eigen::Index index = 0; index < parameters.size(); ++index) {
         if (index != 0) {
@@ -151,7 +151,7 @@ void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, 
     }
     std::cout << ',' << function << ',' << diagnostic.instance;
     if (diagnostic.x.rows() > 0) {
-        const Vector local_error = model.predict(diagnostic.x).mean.col(0) - diagnostic.y;
+        const Vector local_error = model.predict(diagnostic.x).value().mean.col(0) - diagnostic.y;
         const double local_mse = local_error.squaredNorm() / static_cast<double>(local_error.size());
         const double global_variance = variance / static_cast<double>(residual.size());
         const double local_variance = (diagnostic.y.array() - diagnostic.y.mean()).square().mean();
