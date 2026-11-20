@@ -3,7 +3,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <super_gpr/detail/cholesky.hpp>
+#include <super_gpr/gpr.hpp>
 #include <utility>
 
 namespace super_gpr {
