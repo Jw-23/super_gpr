@@ -1,5 +1,6 @@
 #pragma once
 
+#include <boost/outcome/std_result.hpp>
 #include <functional>
 #include <stdexcept>
 #include <super_gpr/types.hpp>
@@ -35,8 +36,13 @@ struct OptimizationResult {
     }
 };
 
+enum class OptimizationError { InvalidBounds, NoFiniteObjective };
+using LBFGSBResult = boost::outcome_v2::std_checked<OptimizationResult, OptimizationError>;
+
 // Minimize f(x). The callback must write df/dx into gradient.
 using Objective = std::function<double(const Vector &, Vector &)>;
+LBFGSBResult try_minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
+                                const LBFGSBOptions &options = {});
 OptimizationResult minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
                                    const LBFGSBOptions &options = {});
 

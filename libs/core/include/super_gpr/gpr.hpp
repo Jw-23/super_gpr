@@ -1,6 +1,7 @@
 #pragma once
 
 #include <boost/outcome/std_result.hpp>
+#include <boost/outcome/try.hpp>
 #include <cstdint>
 #include <random>
 #include <super_gpr/kernel.hpp>
@@ -17,6 +18,8 @@ enum class GPRError {
     NonPositiveDefiniteCovariance,
     NotFitted,
     InvalidThetaSize,
+    InvalidOptimizerBounds,
+    NoFiniteObjective,
 };
 
 template <class T> using GPRResult = boost::outcome_v2::std_checked<T, GPRError>;
@@ -26,7 +29,7 @@ namespace detail {
 // LAPACKE uses the lower triangle of a column-major buffer.
 class Cholesky {
 public:
-    bool compute(Eigen::MatrixXd matrix);
+    GPRResult<void> compute(Eigen::MatrixXd matrix);
     Eigen::MatrixXd solve(Eigen::MatrixXd rhs) const;
     Eigen::MatrixXd solve_lower(Eigen::MatrixXd rhs) const;
     double log_diagonal() const;
@@ -200,14 +203,9 @@ public:
         }
         optimization_results_.clear();
         if (options_.optimize && kernel_.parameter_count() > 0) {
-            const auto result = optimize_kernel();
-            if (!result) {
-                return result;
-            }
+            BOOST_OUTCOME_TRY(optimize_kernel());
         }
-        if (!cholesky_.compute(training_covariance(kernel_))) {
-            return boost::outcome_v2::failure(GPRError::NonPositiveDefiniteCovariance);
-        }
+        BOOST_OUTCOME_TRY(cholesky_.compute(training_covariance(kernel_)));
         weights_ = cholesky_.solve(y_);
         likelihood_ = likelihood_value(cholesky_, weights_);
         fitted_ = true;
@@ -338,6 +336,10 @@ private:
             throw std::invalid_argument("Prior vectors must match theta and have positive standard deviations");
         case GPRError::NonFiniteRestartBounds:
             throw std::invalid_argument("Optimizer restarts require finite bounds");
+        case GPRError::InvalidOptimizerBounds:
+            throw std::invalid_argument("Bounds must match x and satisfy lower <= upper");
+        case GPRError::NoFiniteObjective:
+            throw NoFiniteObjective("Objective has no finite value and gradient");
         case GPRError::NonPositiveDefiniteCovariance:
             throw std::runtime_error(
                 "Training covariance is not positive definite; check the kernel or increase alpha");
@@ -419,9 +421,7 @@ private:
     }
     GPRResult<Likelihood> evaluate_likelihood(const K &kernel) const {
         detail::Cholesky factor;
-        if (!factor.compute(training_covariance(kernel))) {
-            return boost::outcome_v2::failure(GPRError::NonPositiveDefiniteCovariance);
-        }
+        BOOST_OUTCOME_TRY(factor.compute(training_covariance(kernel)));
         Likelihood result;
         result.gradient = Vector::Zero(kernel.parameter_count());
         const Eigen::MatrixXd weights = factor.solve(y_);
@@ -457,22 +457,14 @@ private:
         }
         K candidate = kernel_;
         bool factored = false;
-        bool factorization_failed = false;
-        bool callback_failed = false;
         auto objective = [&](const Vector &theta, Vector &gradient) {
-            try {
-                candidate.set_theta(theta);
-                auto result = evaluate_likelihood(candidate);
-                factored |= result.has_value();
-                factorization_failed |= result.has_error();
-                auto likelihood = result ? std::move(result).value() : invalid_likelihood(theta.size());
-                apply_prior(theta, likelihood);
-                gradient = -likelihood.gradient;
-                return -likelihood.value;
-            } catch (const NoFiniteObjective &) {
-                callback_failed = true;
-                throw;
-            }
+            candidate.set_theta(theta);
+            auto result = evaluate_likelihood(candidate);
+            factored |= result.has_value();
+            auto likelihood = result ? std::move(result).value() : invalid_likelihood(theta.size());
+            apply_prior(theta, likelihood);
+            gradient = -likelihood.gradient;
+            return -likelihood.value;
         };
         std::mt19937_64 random(options_.random_seed);
         std::uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -487,16 +479,15 @@ private:
                 }
             }
             factored = false;
-            factorization_failed = false;
-            OptimizationResult result;
-            try {
-                result = minimize_lbfgsb(objective, initial, bounds, options_.optimizer);
-            } catch (const NoFiniteObjective &) {
-                if (!callback_failed && factorization_failed && !factored) {
-                    return boost::outcome_v2::failure(GPRError::NonPositiveDefiniteCovariance);
+            auto outcome = try_minimize_lbfgsb(objective, initial, bounds, options_.optimizer);
+            if (!outcome) {
+                if (outcome.error() == OptimizationError::InvalidBounds) {
+                    return boost::outcome_v2::failure(GPRError::InvalidOptimizerBounds);
                 }
-                throw;
+                return boost::outcome_v2::failure(factored ? GPRError::NoFiniteObjective
+                                                          : GPRError::NonPositiveDefiniteCovariance);
             }
+            auto &result = outcome.value();
             if (result.value < best) {
                 best = result.value;
                 best_theta = result.x;

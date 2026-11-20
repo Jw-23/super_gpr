@@ -60,7 +60,7 @@ public:
         check_features(x);
         out.setZero();
         if (contiguous_) {
-            kernel_.diagonal_gradient(x.segment(features_.front(), dimension()),
+            kernel_.diagonal_gradient(contiguous_point(x),
                                       out.segment(features_.front(), dimension()));
         } else {
             const Vector local_x = project(x);
@@ -75,6 +75,9 @@ private:
     template <class> friend class AdditiveKernel;
 
     Eigen::Index dimension() const { return static_cast<Eigen::Index>(features_.size()); }
+    Eigen::Map<const Vector> contiguous_point(Point point) const {
+        return Eigen::Map<const Vector>(point.data() + features_.front(), dimension());
+    }
     void check_features(Point point) const {
         if (point.size() < required_features_) {
             throw std::invalid_argument("Subspace feature exceeds input dimension");
@@ -112,7 +115,7 @@ private:
         check_features(x);
         auto local = scratch.head(dimension());
         if (contiguous_) {
-            kernel_.diagonal_gradient(x.segment(features_.front(), dimension()), local);
+            kernel_.diagonal_gradient(contiguous_point(x), local);
         } else {
             kernel_.diagonal_gradient(project(x), local);
         }
@@ -123,8 +126,7 @@ private:
         check_features(x);
         check_features(y);
         if (contiguous_) {
-            return function(x.segment(features_.front(), dimension()),
-                            y.segment(features_.front(), dimension()));
+            return function(contiguous_point(x), contiguous_point(y));
         }
         const Vector local_x = project(x);
         const Vector local_y = project(y);

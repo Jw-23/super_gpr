@@ -190,6 +190,10 @@ TEST(Optimizer, ReportsIterationLimitAndPropagatesCallbackErrors) {
                      [](const Vector &, Vector &) -> double { throw std::runtime_error("callback error"); },
                      Vector::Ones(2), bounds),
                  std::runtime_error);
+    EXPECT_THROW(try_minimize_lbfgsb(
+                     [](const Vector &, Vector &) -> double { throw NoFiniteObjective("callback error"); },
+                     Vector::Ones(2), bounds),
+                 NoFiniteObjective);
 }
 
 TEST(GPR, LMLGradientAndPosteriorInputDerivatives) {
@@ -347,6 +351,12 @@ TEST(Optimizer, RejectsNonFiniteObjectiveWithAllCoordinatesFixed) {
         gradient.setZero();
         return std::numeric_limits<double>::quiet_NaN();
     };
+    const auto result = try_minimize_lbfgsb(objective, bounds.lower, bounds);
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), OptimizationError::NoFiniteObjective);
+    const auto invalid_bounds = try_minimize_lbfgsb(objective, Vector::Zero(2), bounds);
+    ASSERT_FALSE(invalid_bounds);
+    EXPECT_EQ(invalid_bounds.error(), OptimizationError::InvalidBounds);
     EXPECT_THROW(minimize_lbfgsb(objective, bounds.lower, bounds), NoFiniteObjective);
 }
 

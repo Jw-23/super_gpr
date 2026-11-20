@@ -33,6 +33,8 @@ target_link_libraries(your_application PRIVATE super_gpr::super_gpr)
 可调用 `try_fit(X, y)` 并检查 `result.error()` 返回的 `GPRError`。
 `try_log_marginal_likelihood(theta)` 同样返回结果，能区分模型未拟合、
 参数长度错误和协方差分解失败。用户提供的 Kernel 回调异常仍原样传播。
+`try_minimize_lbfgsb()` 对无效边界或无有限目标值及梯度返回 `OptimizationError`。
+旧的 `minimize_lbfgsb()` 仍抛出相应异常，用户目标函数抛出的异常原样传播。
 
 启用 clang-tidy 目标：
 
