@@ -6,8 +6,12 @@ L-BFGS-B 优化。提供预测均值、标准差、完整协方差、多输出�
 ## 构建与验证
 
 需要 CMake 3.24+、Ninja、Git 和支持 C++14 的编译器。
-Eigen 3.4 与 LBFGS++ 为必要依赖。Eigen 优先使用已安装版本，否则由 CPM 获取固定版本；
+Eigen 3.4、Boost.Outcome（Boost 1.83 或更新版本）、LAPACKE/LAPACK 与 LBFGS++ 为必要依赖。
+Eigen 和 Boost 优先使用已安装版本，否则由 CPM 获取固定版本；
 LBFGS++ 的头文件和许可证已内置于 `third_party/lbfgspp`，构建时无需下载。
+Debian 和 Ubuntu 可安装 `liblapacke-dev` 与 `libopenblas-dev`，再用
+`-DBLA_VENDOR=OpenBLAS` 指定 OpenBLAS 后端。自定义安装路径可通过
+`CMAKE_PREFIX_PATH` 提供。LAPACKE 与 LAPACK 必须使用相同的整数 ABI。
 GoogleTest 和 Google Benchmark 默认启用，可分别通过
 `PROJECT_ENABLE_TESTING`、`PROJECT_ENABLE_BENCHMARKS` 关闭。
 
@@ -24,6 +28,11 @@ ctest --preset debug
 add_subdirectory(super_gpr)
 target_link_libraries(your_application PRIVATE super_gpr::super_gpr)
 ```
+
+`fit(X, y)` 保留原有异常接口。需要按结果处理输入校验和协方差分解失败时，
+可调用 `try_fit(X, y)` 并检查 `result.error()` 返回的 `GPRError`。
+`try_log_marginal_likelihood(theta)` 同样返回结果，能区分模型未拟合、
+参数长度错误和协方差分解失败。用户提供的 Kernel 回调异常仍原样传播。
 
 启用 clang-tidy 目标：
 
@@ -192,7 +201,8 @@ auto cross = gp.component_cross_covariance(components[0], components[1], query);
 
 `AdditiveKernel<K>` 保留静态子核类型，支持运行时指定组数；`SubspaceKernel<K>` 支持
 非连续、重排及组间重叠的坐标，但同一个组内不能重复索引。连续组通过 Eigen 视图访问，
-非连续组收集到局部向量。输入导数散射回原始维度，组间重叠时累加导数。
+非连续组在训练协方差构造与 LML 梯度计算中按组批量投影。逐点调用子空间核时仍使用局部向量。
+输入导数散射回原始维度，组间重叠时累加导数。
 
 原有组合子仍然适用，例如：
 
@@ -287,7 +297,8 @@ LML(theta) - 0.5 * sum_i ((theta_i - prior.mean_i) / prior.standard_deviation_i)
 
 使用 Cholesky 分解计算后验和 LML。每次 LML 梯度求值将核导数直接与
 `(alpha * alpha^T - targets * K^-1)` 收缩，不存储 `n × n × parameters` 导数张量。
-Cholesky 使用列主序，输入矩阵使用行主序，方便逐样本计算核函数。
+Cholesky 分解、方程求解及逆矩阵下三角计算由 LAPACKE 执行，使用列主序缓冲区。
+公开矩阵和向量类型仍使用 Eigen，训练输入使用行主序以方便逐样本计算核函数。
 精确 GPR 的拟合时间为 `O(n^3)`、存储为 `O(n^2)`，适用于中小规模密集问题。
 
 `GPROptions`：

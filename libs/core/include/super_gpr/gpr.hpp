@@ -1,10 +1,11 @@
 #pragma once
 
-#include <Eigen/Cholesky>
 #include <cstdint>
 #include <random>
-#include <super_gpr/kernel.hpp>
+#include <super_gpr/detail/cholesky.hpp>
+#include <super_gpr/detail/training_kernel.hpp>
 #include <super_gpr/optimizer.hpp>
+#include <super_gpr/result.hpp>
 
 namespace super_gpr {
 
@@ -45,7 +46,6 @@ struct PosteriorPoint {
 template <class Kernel> class GaussianProcessRegressor {
     using K = std::decay_t<Kernel>;
     static_assert(IsKernel<K>::value, "K must satisfy the Kernel interface");
-    using Cholesky = Eigen::LLT<Eigen::MatrixXd>;
 
 public:
     explicit GaussianProcessRegressor(K kernel, GPROptions options = {})
@@ -53,21 +53,28 @@ public:
 
     void fit(const Matrix &x, const Vector &y) { fit(x, Matrix(y)); }
     void fit(const Matrix &x, const Matrix &y) {
+        const auto result = try_fit(x, y);
+        if (!result) {
+            throw_fit_error(result.error());
+        }
+    }
+
+    GPRResult<void> try_fit(const Matrix &x, const Vector &y) { return try_fit(x, Matrix(y)); }
+    GPRResult<void> try_fit(const Matrix &x, const Matrix &y) {
         if (x.rows() == 0 || x.cols() == 0 || y.cols() == 0 || x.rows() != y.rows()) {
-            throw std::invalid_argument("Training data must be nonempty with matching sample counts");
+            return boost::outcome_v2::failure(GPRError::InvalidTrainingShape);
         }
         if (options_.sample_noise.size() != 0 && options_.sample_noise.size() != x.rows()) {
-            throw std::invalid_argument("sample_noise must have one variance per training observation");
+            return boost::outcome_v2::failure(GPRError::InvalidSampleNoiseSize);
         }
         if (options_.optimizer_restarts < 0) {
-            throw std::invalid_argument("optimizer_restarts must be nonnegative");
+            return boost::outcome_v2::failure(GPRError::NegativeOptimizerRestarts);
         }
         const auto prior_size = options_.prior.mean.size();
         if (prior_size != options_.prior.standard_deviation.size() ||
             (prior_size != 0 && prior_size != kernel_.parameter_count()) ||
             (options_.prior.standard_deviation.array() <= 0.0).any()) {
-            throw std::invalid_argument(
-                "Prior vectors must match theta and have positive standard deviations");
+            return boost::outcome_v2::failure(GPRError::InvalidPrior);
         }
         fitted_ = false;
         x_ = x;
@@ -84,17 +91,18 @@ public:
         }
         optimization_results_.clear();
         if (options_.optimize && kernel_.parameter_count() > 0) {
-            optimize_kernel();
+            const auto result = optimize_kernel();
+            if (!result) {
+                return result;
+            }
         }
-        Matrix matrix = training_covariance(kernel_);
-        cholesky_.compute(matrix);
-        if (cholesky_.info() != Eigen::Success) {
-            throw std::runtime_error(
-                "Training covariance is not positive definite; check the kernel or increase alpha");
+        if (!cholesky_.compute(training_covariance(kernel_))) {
+            return boost::outcome_v2::failure(GPRError::NonPositiveDefiniteCovariance);
         }
         weights_ = cholesky_.solve(y_);
         likelihood_ = likelihood_value(cholesky_, weights_);
         fitted_ = true;
+        return boost::outcome_v2::success();
     }
 
     const K &kernel() const { return kernel_; }
@@ -106,6 +114,18 @@ public:
 
     Likelihood log_marginal_likelihood(Point theta) const {
         require_fitted();
+        K candidate = kernel_;
+        candidate.set_theta(theta);
+        return likelihood_or_invalid(candidate);
+    }
+
+    GPRResult<Likelihood> try_log_marginal_likelihood(Point theta) const {
+        if (!fitted_) {
+            return boost::outcome_v2::failure(GPRError::NotFitted);
+        }
+        if (theta.size() != kernel_.parameter_count()) {
+            return boost::outcome_v2::failure(GPRError::InvalidThetaSize);
+        }
         K candidate = kernel_;
         candidate.set_theta(theta);
         return evaluate_likelihood(candidate);
@@ -149,8 +169,8 @@ public:
         }
         const Matrix first_cross = covariance(first, x, x_);
         const Matrix second_cross = covariance(second, x, x_);
-        const Matrix first_solved = cholesky_.matrixL().solve(first_cross.transpose());
-        const Matrix second_solved = cholesky_.matrixL().solve(second_cross.transpose());
+        const Eigen::MatrixXd first_solved = cholesky_.solve_lower(first_cross.transpose());
+        const Eigen::MatrixXd second_solved = cholesky_.solve_lower(second_cross.transpose());
         const Matrix cross = -first_solved.transpose() * second_solved;
         std::vector<Matrix> result;
         result.reserve(static_cast<std::size_t>(y_.cols()));
@@ -167,31 +187,56 @@ public:
             throw std::invalid_argument("Point prediction requires matching features and a scalar target");
         }
         Vector cross(x_.rows());
-        Matrix jacobian(x_.rows(), point.size());
-        Vector scratch(point.size());
         for (Eigen::Index row = 0; row < x_.rows(); ++row) {
-            const auto training = x_.row(row).transpose();
-            cross[row] = kernel_.value(point, training, false);
-            kernel_.input_gradient(point, training, scratch);
-            jacobian.row(row) = scratch.transpose();
+            cross[row] = kernel_.value(point, x_.row(row).transpose(), false);
         }
-        const Vector solved = cholesky_.solve(cross);
-        const double variance = std::max(0.0, kernel_.value(point, point, true) - cross.dot(solved));
+        const Eigen::MatrixXd solved = cholesky_.solve(cross);
+        const double variance = std::max(0.0, kernel_.value(point, point, true) - cross.dot(solved.col(0)));
         const double stddev = std::sqrt(variance);
         PosteriorPoint result;
         result.mean = cross.dot(weights_.col(0)) * scale_[0] + mean_[0];
         result.standard_deviation = stddev * scale_[0];
-        result.mean_gradient = jacobian.transpose() * weights_.col(0) * scale_[0];
-        kernel_.diagonal_gradient(point, scratch);
+        result.mean_gradient = Vector::Zero(point.size());
         result.standard_deviation_gradient = Vector::Zero(point.size());
+        Vector scratch(point.size());
+        // Contract the spatial derivatives directly without materializing an n-by-d Jacobian.
+        for (Eigen::Index row = 0; row < x_.rows(); ++row) {
+            kernel_.input_gradient(point, x_.row(row).transpose(), scratch);
+            result.mean_gradient.noalias() += weights_(row, 0) * scratch;
+            result.standard_deviation_gradient.noalias() += solved(row, 0) * scratch;
+        }
+        result.mean_gradient *= scale_[0];
+        kernel_.diagonal_gradient(point, scratch);
         if (stddev > 0.0) {
             result.standard_deviation_gradient =
-                (scratch - 2.0 * jacobian.transpose() * solved) * (scale_[0] / (2.0 * stddev));
+                (scratch - 2.0 * result.standard_deviation_gradient) * (scale_[0] / (2.0 * stddev));
+        } else {
+            result.standard_deviation_gradient.setZero();
         }
         return result;
     }
 
 private:
+    [[noreturn]] static void throw_fit_error(GPRError error) {
+        switch (error) {
+        case GPRError::InvalidTrainingShape:
+            throw std::invalid_argument("Training data must be nonempty with matching sample counts");
+        case GPRError::InvalidSampleNoiseSize:
+            throw std::invalid_argument("sample_noise must have one variance per training observation");
+        case GPRError::NegativeOptimizerRestarts:
+            throw std::invalid_argument("optimizer_restarts must be nonnegative");
+        case GPRError::InvalidPrior:
+            throw std::invalid_argument("Prior vectors must match theta and have positive standard deviations");
+        case GPRError::NonFiniteRestartBounds:
+            throw std::invalid_argument("Optimizer restarts require finite bounds");
+        case GPRError::NonPositiveDefiniteCovariance:
+            throw std::runtime_error(
+                "Training covariance is not positive definite; check the kernel or increase alpha");
+        default:
+            throw std::logic_error("Unexpected GPR fit error");
+        }
+    }
+
     template <class Component>
     Prediction predict_kernel(const Component &component, const Matrix &x, bool return_covariance,
                               bool include_mean) const {
@@ -200,11 +245,11 @@ private:
         }
         const Eigen::Index outputs = fitted_ ? y_.cols() : 1;
         Prediction result{Matrix::Zero(x.rows(), outputs), Matrix(x.rows(), outputs), {}};
-        Matrix solved;
+        Eigen::MatrixXd solved;
         if (fitted_) {
             const Matrix cross = covariance(component, x, x_);
             result.mean.noalias() = cross * weights_;
-            solved = cholesky_.matrixL().solve(cross.transpose());
+            solved = cholesky_.solve_lower(cross.transpose());
         }
         Vector variance(x.rows());
         for (Eigen::Index row = 0; row < x.rows(); ++row) {
@@ -237,8 +282,9 @@ private:
             throw std::logic_error("Fit the Gaussian process first");
         }
     }
-    Matrix training_covariance(const K &kernel) const {
-        Matrix matrix = covariance(kernel, x_);
+    Eigen::MatrixXd training_covariance(const K &kernel) const {
+        Eigen::MatrixXd matrix = Eigen::MatrixXd::Zero(x_.rows(), x_.rows());
+        detail::TrainingKernel<K>::add_covariance(kernel, x_, matrix);
         if (options_.sample_noise.size() == 0) {
             matrix.diagonal().array() += options_.alpha;
         } else {
@@ -246,32 +292,37 @@ private:
         }
         return matrix;
     }
-    double likelihood_value(const Cholesky &factor, const Matrix &weights) const {
+    double likelihood_value(const detail::Cholesky &factor, const Eigen::MatrixXd &weights) const {
         const auto outputs = static_cast<double>(y_.cols());
         return -0.5 * (y_.array() * weights.array()).sum() -
-               outputs * factor.matrixLLT().diagonal().array().log().sum() -
+               outputs * factor.log_diagonal() -
                0.5 * static_cast<double>(y_.rows()) * outputs * std::log(2.0 * std::acos(-1.0));
     }
-    Likelihood evaluate_likelihood(const K &kernel) const {
-        const Matrix matrix = training_covariance(kernel);
-        const Cholesky factor(matrix);
+    Likelihood likelihood_or_invalid(const K &kernel) const {
+        auto result = evaluate_likelihood(kernel);
+        if (result) {
+            return std::move(result).value();
+        }
+        return invalid_likelihood(kernel.parameter_count());
+    }
+    static Likelihood invalid_likelihood(Eigen::Index parameters) {
+        return {-std::numeric_limits<double>::infinity(), Vector::Zero(parameters)};
+    }
+    GPRResult<Likelihood> evaluate_likelihood(const K &kernel) const {
+        detail::Cholesky factor;
+        if (!factor.compute(training_covariance(kernel))) {
+            return boost::outcome_v2::failure(GPRError::NonPositiveDefiniteCovariance);
+        }
         Likelihood result;
         result.gradient = Vector::Zero(kernel.parameter_count());
-        if (factor.info() != Eigen::Success) {
-            return result;
-        }
-        const Matrix weights = factor.solve(y_);
+        const Eigen::MatrixXd weights = factor.solve(y_);
         result.value = likelihood_value(factor, weights);
         // Contract one derivative at a time, avoiding an O(n^2 * p) tensor.
-        const Matrix contraction =
-            weights * weights.transpose() -
-            static_cast<double>(y_.cols()) * factor.solve(Matrix::Identity(x_.rows(), x_.rows()));
-        Vector scratch(kernel.parameter_count());
-        for (Eigen::Index row = 0; row < x_.rows(); ++row) {
-            for (Eigen::Index col = 0; col <= row; ++col) {
-                kernel.gradient(x_.row(row).transpose(), x_.row(col).transpose(), row == col, scratch);
-                result.gradient.noalias() += scratch * (contraction(row, col) * (row == col ? 0.5 : 1.0));
-            }
+        if (result.gradient.size() != 0) {
+            Eigen::MatrixXd contraction = std::move(factor).take_inverse_lower();
+            contraction.triangularView<Eigen::Lower>() *= -static_cast<double>(y_.cols());
+            contraction.selfadjointView<Eigen::Lower>().rankUpdate(weights);
+            detail::TrainingKernel<K>::contract(kernel, x_, contraction, result.gradient);
         }
         return result;
     }
@@ -290,18 +341,29 @@ private:
                 (theta - options_.prior.mean).array() / options_.prior.standard_deviation.array().square();
         }
     }
-    void optimize_kernel() {
+    GPRResult<void> optimize_kernel() {
         const auto bounds = kernel_.bounds();
         if (options_.optimizer_restarts > 0 && (!bounds.lower.allFinite() || !bounds.upper.allFinite())) {
-            throw std::invalid_argument("Optimizer restarts require finite bounds");
+            return boost::outcome_v2::failure(GPRError::NonFiniteRestartBounds);
         }
         K candidate = kernel_;
+        bool factored = false;
+        bool factorization_failed = false;
+        bool callback_failed = false;
         auto objective = [&](const Vector &theta, Vector &gradient) {
-            candidate.set_theta(theta);
-            auto likelihood = evaluate_likelihood(candidate);
-            apply_prior(theta, likelihood);
-            gradient = -likelihood.gradient;
-            return -likelihood.value;
+            try {
+                candidate.set_theta(theta);
+                auto result = evaluate_likelihood(candidate);
+                factored |= result.has_value();
+                factorization_failed |= result.has_error();
+                auto likelihood = result ? std::move(result).value() : invalid_likelihood(theta.size());
+                apply_prior(theta, likelihood);
+                gradient = -likelihood.gradient;
+                return -likelihood.value;
+            } catch (const NoFiniteObjective &) {
+                callback_failed = true;
+                throw;
+            }
         };
         std::mt19937_64 random(options_.random_seed);
         std::uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -315,7 +377,17 @@ private:
                         bounds.lower[index] + uniform(random) * (bounds.upper[index] - bounds.lower[index]);
                 }
             }
-            auto result = minimize_lbfgsb(objective, initial, bounds, options_.optimizer);
+            factored = false;
+            factorization_failed = false;
+            OptimizationResult result;
+            try {
+                result = minimize_lbfgsb(objective, initial, bounds, options_.optimizer);
+            } catch (const NoFiniteObjective &) {
+                if (!callback_failed && factorization_failed && !factored) {
+                    return boost::outcome_v2::failure(GPRError::NonPositiveDefiniteCovariance);
+                }
+                throw;
+            }
             if (result.value < best) {
                 best = result.value;
                 best_theta = result.x;
@@ -323,15 +395,16 @@ private:
             optimization_results_.push_back(std::move(result));
         }
         kernel_.set_theta(best_theta);
+        return boost::outcome_v2::success();
     }
     K kernel_;
     GPROptions options_;
     Matrix x_;
     Matrix y_;
-    Matrix weights_;
+    Eigen::MatrixXd weights_;
     Vector mean_;
     Vector scale_;
-    Cholesky cholesky_;
+    detail::Cholesky cholesky_;
     std::vector<OptimizationResult> optimization_results_;
     double likelihood_ = 0.0;
     bool fitted_ = false;

@@ -41,6 +41,33 @@ if(NOT TARGET Eigen3::Eigen)
   target_include_directories(project_eigen SYSTEM INTERFACE "${eigen_SOURCE_DIR}")
 endif()
 
+if(NOT TARGET LAPACKE::LAPACKE)
+  find_path(LAPACKE_INCLUDE_DIR NAMES lapacke.h REQUIRED)
+  find_library(LAPACKE_LIBRARY NAMES lapacke REQUIRED)
+  find_package(LAPACK REQUIRED)
+  add_library(LAPACKE::LAPACKE UNKNOWN IMPORTED)
+  set_target_properties(LAPACKE::LAPACKE PROPERTIES
+    IMPORTED_LOCATION "${LAPACKE_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${LAPACKE_INCLUDE_DIR}"
+    INTERFACE_LINK_LIBRARIES LAPACK::LAPACK
+  )
+endif()
+
 add_library(project_lbfgspp INTERFACE)
 target_include_directories(project_lbfgspp SYSTEM INTERFACE
   "${CMAKE_CURRENT_LIST_DIR}/../third_party/lbfgspp/include")
+
+find_package(Boost 1.83 QUIET CONFIG)
+if(TARGET Boost::headers)
+  set(PROJECT_OUTCOME_HEADERS Boost::headers)
+else()
+  CPMAddPackage(
+    NAME boost_headers
+    URL https://github.com/boostorg/boost/releases/download/boost-1.88.0/boost-1.88.0-b2-nodocs.tar.xz
+    URL_HASH SHA256=ad9ce2c91bc0977a7adc92d51558f3b9c53596bb88246a280175ebb475da1762
+    DOWNLOAD_ONLY YES
+  )
+  add_library(project_boost_headers INTERFACE)
+  target_include_directories(project_boost_headers SYSTEM INTERFACE "${boost_headers_SOURCE_DIR}")
+  set(PROJECT_OUTCOME_HEADERS project_boost_headers)
+endif()

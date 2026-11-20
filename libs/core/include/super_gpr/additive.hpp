@@ -71,6 +71,9 @@ public:
     }
 
 private:
+    friend struct detail::TrainingKernel<SubspaceKernel<K>>;
+    template <class> friend class AdditiveKernel;
+
     Eigen::Index dimension() const { return static_cast<Eigen::Index>(features_.size()); }
     void check_features(Point point) const {
         if (point.size() < required_features_) {
@@ -89,6 +92,32 @@ private:
             out[features_[static_cast<std::size_t>(axis)]] = local[axis];
         }
     }
+    void add_local_gradient(Point local, Gradient out) const {
+        if (contiguous_) {
+            out.segment(features_.front(), dimension()) += local;
+            return;
+        }
+        for (Eigen::Index axis = 0; axis < dimension(); ++axis) {
+            out[features_[static_cast<std::size_t>(axis)]] += local[axis];
+        }
+    }
+    void add_input_gradient(Point x, Point y, Gradient out, Gradient scratch) const {
+        auto local = scratch.head(dimension());
+        with_points(x, y, [&](Point local_x, Point local_y) {
+            kernel_.input_gradient(local_x, local_y, local);
+        });
+        add_local_gradient(local, out);
+    }
+    void add_diagonal_gradient(Point x, Gradient out, Gradient scratch) const {
+        check_features(x);
+        auto local = scratch.head(dimension());
+        if (contiguous_) {
+            kernel_.diagonal_gradient(x.segment(features_.front(), dimension()), local);
+        } else {
+            kernel_.diagonal_gradient(project(x), local);
+        }
+        add_local_gradient(local, out);
+    }
     template <class Function>
     auto with_points(Point x, Point y, Function function) const -> decltype(function(x, y)) {
         check_features(x);
@@ -100,6 +129,22 @@ private:
         const Vector local_x = project(x);
         const Vector local_y = project(y);
         return function(local_x, local_y);
+    }
+    template <class Function> void with_training_points(detail::TrainingPoints x, Function function) const {
+        if (x.cols() < required_features_) {
+            throw std::invalid_argument("Subspace feature exceeds input dimension");
+        }
+        if (contiguous_) {
+            function(x.middleCols(features_.front(), dimension()));
+            return;
+        }
+        Matrix projected(x.rows(), dimension());
+        for (Eigen::Index row = 0; row < x.rows(); ++row) {
+            for (Eigen::Index axis = 0; axis < dimension(); ++axis) {
+                projected(row, axis) = x(row, features_[static_cast<std::size_t>(axis)]);
+            }
+        }
+        function(projected);
     }
     K kernel_;
     FeatureGroup features_;
@@ -118,6 +163,7 @@ public:
         offsets_.push_back(0);
         for (const auto &component : components_) {
             offsets_.push_back(offsets_.back() + component.parameter_count());
+            max_group_size_ = std::max(max_group_size_, component.dimension());
         }
     }
     AdditiveKernel(const std::vector<FeatureGroup> &groups, const K &prototype)
@@ -166,18 +212,16 @@ public:
     }
     void input_gradient(Point x, Point y, Gradient out) const {
         out.setZero();
-        Vector scratch(x.size());
+        Vector scratch(max_group_size_);
         for (const auto &component : components_) {
-            component.input_gradient(x, y, scratch);
-            out += scratch;
+            component.add_input_gradient(x, y, out, scratch);
         }
     }
     void diagonal_gradient(Point x, Gradient out) const {
         out.setZero();
-        Vector scratch(x.size());
+        Vector scratch(max_group_size_);
         for (const auto &component : components_) {
-            component.diagonal_gradient(x, scratch);
-            out += scratch;
+            component.add_diagonal_gradient(x, out, scratch);
         }
     }
 
@@ -193,6 +237,7 @@ private:
     }
     std::vector<SubspaceKernel<K>> components_;
     std::vector<Eigen::Index> offsets_;
+    Eigen::Index max_group_size_ = 0;
 };
 
 template <class K>
@@ -243,6 +288,59 @@ SharedAdditiveKernel<K> make_shared_additive_kernel(const std::vector<FeatureGro
                                                     const K &prototype) {
     return SharedAdditiveKernel<K>(groups, prototype);
 }
+
+namespace detail {
+
+template <class K> struct TrainingKernel<SubspaceKernel<K>> {
+    static constexpr bool split_covariance = true;
+
+    static void add_covariance(const SubspaceKernel<K> &kernel, TrainingPoints x, Eigen::MatrixXd &matrix) {
+        kernel.with_training_points(x, [&](TrainingPoints projected) {
+            TrainingKernel<K>::add_covariance(kernel.kernel(), projected, matrix);
+        });
+    }
+
+    static void contract(const SubspaceKernel<K> &kernel, TrainingPoints x,
+                         const Eigen::MatrixXd &contraction, Gradient out) {
+        kernel.with_training_points(x, [&](TrainingPoints projected) {
+            TrainingKernel<K>::contract(kernel.kernel(), projected, contraction, out);
+        });
+    }
+};
+
+template <class K> struct AdditiveTrainingCovariance {
+    static constexpr bool split_covariance = true;
+
+    template <class Sum>
+    static void add_covariance(const Sum &kernel, TrainingPoints x, Eigen::MatrixXd &matrix) {
+        for (const auto &component : kernel.components()) {
+            TrainingKernel<SubspaceKernel<K>>::add_covariance(component, x, matrix);
+        }
+    }
+};
+
+template <class K> struct TrainingKernel<AdditiveKernel<K>> : AdditiveTrainingCovariance<K> {
+    static void contract(const AdditiveKernel<K> &kernel, TrainingPoints x,
+                         const Eigen::MatrixXd &contraction, Gradient out) {
+        Eigen::Index offset = 0;
+        for (const auto &component : kernel.components()) {
+            const Eigen::Index count = component.parameter_count();
+            TrainingKernel<SubspaceKernel<K>>::contract(component, x, contraction, out.segment(offset, count));
+            offset += count;
+        }
+    }
+};
+
+template <class K> struct TrainingKernel<SharedAdditiveKernel<K>> : AdditiveTrainingCovariance<K> {
+    static void contract(const SharedAdditiveKernel<K> &kernel, TrainingPoints x,
+                         const Eigen::MatrixXd &contraction, Gradient out) {
+        for (const auto &component : kernel.components()) {
+            TrainingKernel<SubspaceKernel<K>>::contract(component, x, contraction, out);
+        }
+    }
+};
+
+} // namespace detail
 
 template <class K> using AdditiveGP = GaussianProcessRegressor<AddKernel<AdditiveKernel<K>, WhiteKernel>>;
 template <class K>

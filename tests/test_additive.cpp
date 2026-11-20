@@ -6,7 +6,7 @@ namespace {
 using namespace super_gpr;
 
 TEST(AdditiveKernel, EqualsAnExplicitSumAndPreservesTypes) {
-    auto component = ConstantKernel({1.3}) * RBF({0.7});
+    auto component = ConstantKernel({1.3}) * RBF(Parameter{0.7});
     auto additive = make_additive_kernel({{0, 1}, {2, 3}}, component);
     auto sum = SubspaceKernel<decltype(component)>(component, {0, 1}) +
                SubspaceKernel<decltype(component)>(component, {2, 3});
@@ -26,7 +26,7 @@ TEST(AdditiveKernel, EqualsAnExplicitSumAndPreservesTypes) {
 }
 
 TEST(AdditiveKernel, AnalyticDerivativesForNoncontiguousAndOverlappingGroups) {
-    auto kernel = make_additive_kernel({{2, 0}, {1, 2}}, ConstantKernel({1.3}) * RBF({0.7}));
+    auto kernel = make_additive_kernel({{2, 0}, {1, 2}}, ConstantKernel({1.3}) * RBF(Parameter{0.7}));
     Vector x = (Vector(4) << 0.2, -0.3, 0.7, 0.1).finished();
     const Vector y = (Vector(4) << 0.8, 0.4, -0.1, -0.4).finished();
     const Vector theta = kernel.theta();
@@ -102,7 +102,7 @@ TEST(AdditiveGP, SharedObservationInfersComponentsAndTheirPosteriorDependence) {
 }
 
 TEST(AdditiveGP, ComponentsReconstructNormalizedMultiOutputMeanAndCovariance) {
-    const auto additive = make_additive_kernel({{0}, {1}}, ConstantKernel({1.2}) * RBF({0.7}));
+    const auto additive = make_additive_kernel({{0}, {1}}, ConstantKernel({1.2}) * RBF(Parameter{0.7}));
     GPROptions options;
     options.optimize = false;
     options.normalize_y = true;
@@ -127,6 +127,43 @@ TEST(AdditiveGP, ComponentsReconstructNormalizedMultiOutputMeanAndCovariance) {
                                   noise.covariance[output] + cross[output] + cross[output].transpose();
         EXPECT_TRUE(total.covariance[output].isApprox(covariance, 1e-10));
     }
+}
+
+TEST(AdditiveGP, BatchedTrainingMatchesPairwiseKernelsWithOverlappingGroups) {
+    Matrix x(5, 3);
+    x << 0.0, 0.1, 0.3, 0.5, 0.8, 0.2, 1.0, -0.3, 0.7, 1.5, 0.4, 0.1, 2.0, -0.5, 0.3;
+    Matrix y(5, 2);
+    y.col(0) = x.col(0).array().sin();
+    y.col(1) = x.col(2).array().cos();
+    GPROptions options;
+    options.optimize = false;
+    options.normalize_y = true;
+    options.sample_noise = Vector::LinSpaced(x.rows(), 0.01, 0.05);
+    const std::vector<FeatureGroup> groups{{2, 0}, {0, 1}};
+    const auto subkernel = ConstantKernel(Parameter{1.2}) *
+                           Matern(std::vector<Parameter>{{0.7}, Parameter::fixed(1.1)}, 2.5);
+    const WhiteKernel white(Parameter{0.05});
+    const auto verify = [&](const auto &kernel) {
+        using Kernel = std::decay_t<decltype(kernel)>;
+        GaussianProcessRegressor<Kernel> batch(kernel, options);
+        GaussianProcessRegressor<BoxedKernel> pairwise(BoxedKernel(kernel), options);
+        batch.fit(x, y);
+        pairwise.fit(x, y);
+        const Vector theta = kernel.theta().array() + 0.1;
+        const auto result = batch.log_marginal_likelihood(theta);
+        const auto expected = pairwise.log_marginal_likelihood(theta);
+        EXPECT_NEAR(result.value, expected.value, 1e-11);
+        EXPECT_TRUE(result.gradient.isApprox(expected.gradient, 1e-11));
+        const auto prediction = batch.predict(x, true);
+        const auto reference = pairwise.predict(x, true);
+        EXPECT_TRUE(prediction.mean.isApprox(reference.mean, 1e-11));
+        EXPECT_TRUE(prediction.standard_deviation.isApprox(reference.standard_deviation, 1e-11));
+        for (std::size_t j = 0; j < prediction.covariance.size(); ++j) {
+            EXPECT_TRUE(prediction.covariance[j].isApprox(reference.covariance[j], 1e-11));
+        }
+    };
+    verify(make_additive_kernel(groups, subkernel) + white);
+    verify(white + make_shared_additive_kernel(groups, subkernel));
 }
 
 TEST(AdditiveGP, JointLMLAndPredictionGradientsIncludeEveryGroup) {
@@ -217,7 +254,7 @@ TEST(SharedAdditiveKernel, TiedParametersPreserveCovarianceAndAnalyticGradients)
 }
 
 TEST(SharedAdditiveGP, FittedComponentsReconstructTheJointPrediction) {
-    auto kernel = make_shared_additive_kernel({{0}, {1}}, ConstantKernel({0.5}) * RBF({0.7}));
+    auto kernel = make_shared_additive_kernel({{0}, {1}}, ConstantKernel({0.5}) * RBF(Parameter{0.7}));
     GPROptions options;
     options.normalize_y = true;
     auto model = make_additive_gp(kernel, {0.01, 1e-6, 0.5}, options);
@@ -234,7 +271,7 @@ TEST(SharedAdditiveGP, FittedComponentsReconstructTheJointPrediction) {
 }
 
 TEST(GPRPrior, PosteriorGradientMatchesFiniteDifferencesAndLikelihoodStaysUnpenalized) {
-    auto kernel = ConstantKernel({1.2}) * RBF({0.7}) + WhiteKernel({0.03});
+    auto kernel = ConstantKernel({1.2}) * RBF(Parameter{0.7}) + WhiteKernel({0.03});
     GPROptions options;
     options.optimize = false;
     options.prior.mean = kernel.theta().array() + 0.2;
@@ -266,7 +303,7 @@ TEST(GPRPrior, PosteriorGradientMatchesFiniteDifferencesAndLikelihoodStaysUnpena
 }
 
 TEST(GPRPrior, MAPOptimizationImprovesThePenalizedObjectiveAndRejectsInvalidPrior) {
-    const auto kernel = ConstantKernel({1.2}) * RBF({0.7}) + WhiteKernel({0.03});
+    const auto kernel = ConstantKernel({1.2}) * RBF(Parameter{0.7}) + WhiteKernel({0.03});
     GPROptions options;
     options.prior.mean = kernel.theta();
     options.prior.standard_deviation = Vector::Constant(3, 0.01);

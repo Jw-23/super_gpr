@@ -1,4 +1,4 @@
-add_library(project_core src/optimizer.cpp)
+add_library(project_core src/cholesky.cpp src/optimizer.cpp)
 add_library(project::core ALIAS project_core)
 
 target_include_directories(
@@ -11,5 +11,6 @@ target_include_directories(
 target_link_libraries(project_core PRIVATE project_options project_warnings)
 
 target_compile_features(project_core PUBLIC cxx_std_14)
-target_link_libraries(project_core PUBLIC Eigen3::Eigen PRIVATE project_lbfgspp)
+target_link_libraries(project_core PUBLIC Eigen3::Eigen ${PROJECT_OUTCOME_HEADERS}
+                      PRIVATE LAPACKE::LAPACKE project_lbfgspp)
 add_library(super_gpr::super_gpr ALIAS project_core)

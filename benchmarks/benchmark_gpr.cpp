@@ -1,5 +1,6 @@
 #include <benchmark/benchmark.h>
-#include <super_gpr/gpr.hpp>
+#include <random>
+#include <super_gpr/additive.hpp>
 
 namespace {
 using namespace super_gpr;
@@ -73,4 +74,46 @@ void likelihood_gradient(benchmark::State &state) {
 // Google Benchmark owns the registration.
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization,cppcoreguidelines-owning-memory)
 BENCHMARK(likelihood_gradient)->RangeMultiplier(2)->Range(64, 512)->Complexity();
+
+template <bool Strided> void shared_additive_likelihood_gradient(benchmark::State &state) {
+    constexpr Eigen::Index groups_count = 20;
+    constexpr Eigen::Index group_size = 4;
+    const auto count = static_cast<Eigen::Index>(state.range(0));
+    std::vector<FeatureGroup> groups;
+    for (Eigen::Index group = 0; group < groups_count; ++group) {
+        FeatureGroup features;
+        for (Eigen::Index axis = 0; axis < group_size; ++axis) {
+            features.push_back(Strided ? axis * groups_count + group : group * group_size + axis);
+        }
+        groups.push_back(std::move(features));
+    }
+    Matrix x(count, group_size * groups_count);
+    std::mt19937 random(5003);
+    std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+    for (Eigen::Index row = 0; row < count; ++row) {
+        for (const auto &group : groups) {
+            for (const auto col : group) {
+                x(row, col) = uniform(random);
+            }
+        }
+    }
+    const Vector y = x.col(0).array().sin();
+    const auto component = ConstantKernel(Parameter{0.05}) *
+                           RBF(std::vector<Parameter>(group_size, Parameter{0.7}));
+    GPROptions options;
+    options.optimize = false;
+    auto model = make_additive_gp(make_shared_additive_kernel(groups, component), {0.001, 1e-8, 0.5}, options);
+    model.fit(x, y);
+    const Vector theta = model.kernel().theta();
+    for (auto iteration : state) {
+        (void)iteration;
+        auto result = model.log_marginal_likelihood(theta);
+        benchmark::DoNotOptimize(result.value);
+        benchmark::DoNotOptimize(result.gradient.data());
+    }
+}
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization,cppcoreguidelines-owning-memory)
+BENCHMARK_TEMPLATE(shared_additive_likelihood_gradient, false)->Arg(512)->Arg(1024);
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization,cppcoreguidelines-owning-memory)
+BENCHMARK_TEMPLATE(shared_additive_likelihood_gradient, true)->Arg(512)->Arg(1024);
 } // namespace

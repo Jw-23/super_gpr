@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <stdexcept>
 #include <super_gpr/types.hpp>
 
 namespace super_gpr {
@@ -14,6 +15,11 @@ struct LBFGSBOptions {
 };
 
 enum class OptimizationStatus { ProjectedGradient, FunctionTolerance, IterationLimit, LineSearchFailure };
+
+class NoFiniteObjective : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 struct OptimizationResult {
     Vector x;

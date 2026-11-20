@@ -34,6 +34,9 @@ OptimizationResult minimize_lbfgsb(const Objective &objective, Vector initial, c
     if (active.empty()) {
         result.value = objective(result.x, result.gradient);
         result.evaluations = 1;
+        if (!std::isfinite(result.value) || !result.gradient.allFinite()) {
+            throw NoFiniteObjective("Objective has no finite value and gradient");
+        }
         return result;
     }
     const auto size = static_cast<Eigen::Index>(active.size());
@@ -86,18 +89,18 @@ OptimizationResult minimize_lbfgsb(const Objective &objective, Vector initial, c
     double value = 0.0;
     try {
         result.iterations = solver.minimize(evaluate, reduced, value, lower, upper);
-    } catch (const std::runtime_error &) {
+    } catch (const std::runtime_error &error) {
         if (callback_error) {
             std::rethrow_exception(callback_error);
         }
         if (!std::isfinite(best)) {
-            throw;
+            throw NoFiniteObjective(error.what());
         }
         result.status = OptimizationStatus::LineSearchFailure;
         return result;
     }
     if (!std::isfinite(best)) {
-        throw std::runtime_error("Objective has no finite value and gradient");
+        throw NoFiniteObjective("Objective has no finite value and gradient");
     }
     const double projected =
         ((result.x - result.gradient).cwiseMax(bounds.lower).cwiseMin(bounds.upper) - result.x)

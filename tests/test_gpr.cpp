@@ -15,12 +15,12 @@ Vector training_y() {
     return y;
 }
 std::vector<BoxedKernel> kernels() {
-    return {BoxedKernel(RBF({0.7})),
+    return {BoxedKernel(RBF(Parameter{0.7})),
             BoxedKernel(RBF(std::vector<Parameter>{{0.7}, {1.3}})),
-            BoxedKernel(Matern({0.7}, 0.5)),
-            BoxedKernel(Matern({0.7}, 1.5)),
+            BoxedKernel(Matern(Parameter{0.7}, 0.5)),
+            BoxedKernel(Matern(Parameter{0.7}, 1.5)),
             BoxedKernel(Matern(std::vector<Parameter>{{0.7}, {1.3}}, 2.5)),
-            BoxedKernel(Matern({0.7}, std::numeric_limits<double>::infinity())),
+            BoxedKernel(Matern(Parameter{0.7}, std::numeric_limits<double>::infinity())),
             BoxedKernel(RationalQuadratic({0.8}, {1.4})),
             BoxedKernel(ExpSineSquared({0.8}, {1.7})),
             BoxedKernel(DotProduct({0.6})),
@@ -258,6 +258,12 @@ TEST(GPR, MultiOutputNoiseAndCovarianceConsistency) {
     EXPECT_TRUE(prediction.covariance[1].isApprox(9.0 * prediction.covariance[0]));
     EXPECT_TRUE(prediction.covariance[0].diagonal().isApprox(
         prediction.standard_deviation.col(0).array().square().matrix()));
+    const auto empty = model.predict(Matrix(0, 2), true);
+    EXPECT_EQ(empty.mean.rows(), 0);
+    EXPECT_EQ(empty.mean.cols(), targets.cols());
+    EXPECT_EQ(empty.standard_deviation.rows(), 0);
+    ASSERT_EQ(empty.covariance.size(), 2u);
+    EXPECT_EQ(empty.covariance[0].size(), 0);
     const Vector theta = model.kernel().theta();
     const auto likelihood = model.log_marginal_likelihood(theta);
     const double step = 1e-6;
@@ -285,6 +291,63 @@ TEST(GPR, PriorConstantTargetsAndNumericalFailures) {
     const Matrix duplicate = Matrix::Zero(2, 1);
     const Vector y = Vector::Ones(2);
     EXPECT_THROW(singular.fit(duplicate, y), std::runtime_error);
+}
+
+TEST(GPR, OutcomeReportsKnownErrorsAndPreservesLegacyLikelihood) {
+    Matrix x(2, 1);
+    x << 0.0, 1.0;
+    const Vector y = Vector::Ones(2);
+    GPROptions options;
+    options.optimize = false;
+    options.alpha = -0.1;
+    GaussianProcessRegressor<RBF> model(RBF(Parameter{0.1}), options);
+    const Vector initial = model.kernel().theta();
+    const auto unfitted = model.try_log_marginal_likelihood(initial);
+    ASSERT_FALSE(unfitted);
+    EXPECT_EQ(unfitted.error(), GPRError::NotFitted);
+
+    ASSERT_TRUE(model.try_fit(x, y));
+    const auto likelihood = model.try_log_marginal_likelihood(initial);
+    ASSERT_TRUE(likelihood);
+    EXPECT_DOUBLE_EQ(likelihood.value().value, model.log_marginal_likelihood());
+
+    const Vector empty;
+    const auto invalid_fit = model.try_fit(x, empty);
+    ASSERT_FALSE(invalid_fit);
+    EXPECT_EQ(invalid_fit.error(), GPRError::InvalidTrainingShape);
+    EXPECT_THROW(model.fit(x, empty), std::invalid_argument);
+    EXPECT_DOUBLE_EQ(model.log_marginal_likelihood(), likelihood.value().value);
+
+    const auto invalid_theta = model.try_log_marginal_likelihood(empty);
+    ASSERT_FALSE(invalid_theta);
+    EXPECT_EQ(invalid_theta.error(), GPRError::InvalidThetaSize);
+    const Vector long_scale = Vector::Constant(1, std::log(10.0));
+    const auto indefinite = model.try_log_marginal_likelihood(long_scale);
+    ASSERT_FALSE(indefinite);
+    EXPECT_EQ(indefinite.error(), GPRError::NonPositiveDefiniteCovariance);
+    const auto legacy = model.log_marginal_likelihood(long_scale);
+    EXPECT_EQ(legacy.value, -std::numeric_limits<double>::infinity());
+    EXPECT_TRUE(legacy.gradient.isZero());
+
+    options.alpha = 0.0;
+    const Matrix duplicate = Matrix::Zero(2, 1);
+    for (const bool optimize : {false, true}) {
+        options.optimize = optimize;
+        GaussianProcessRegressor<RBF> singular(RBF{}, options);
+        const auto result = singular.try_fit(duplicate, y);
+        ASSERT_FALSE(result);
+        EXPECT_EQ(result.error(), GPRError::NonPositiveDefiniteCovariance);
+        EXPECT_THROW(singular.fit(duplicate, y), std::runtime_error);
+    }
+}
+
+TEST(Optimizer, RejectsNonFiniteObjectiveWithAllCoordinatesFixed) {
+    const Bounds bounds{Vector::Zero(1), Vector::Zero(1)};
+    const auto objective = [](const Vector &, Vector &gradient) {
+        gradient.setZero();
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+    EXPECT_THROW(minimize_lbfgsb(objective, bounds.lower, bounds), NoFiniteObjective);
 }
 
 TEST(Acquisition, ValuesAndPartialDerivatives) {
