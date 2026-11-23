@@ -468,12 +468,12 @@ TEST(Acquisition, SuggestMatchesExhaustiveScoringForCandidatesAndGrid) {
     options.normalize_y = true;
     options.optimize = false;
     GaussianProcessRegressor<RBF> model(RBF{}, options);
-    model.fit(x, y);
+    ASSERT_TRUE(model.fit(x, y));
 
     const ParameterGrid grid{{0.0, 0.4, 1.3}, {-0.2, 0.7}};
     Matrix candidates(6, 2);
     candidates << 0.0, -0.2, 0.0, 0.7, 0.4, -0.2, 0.4, 0.7, 1.3, -0.2, 1.3, 0.7;
-    const auto prediction = model.predict(candidates);
+    const auto prediction = model.predict(candidates).value();
     const EI ei(y.minCoeff(), 0.01);
     const LCB lcb;
     SuggestOptions search;
@@ -510,7 +510,7 @@ TEST(Acquisition, SuggestUsesFirstAvailableTieAndReportsExhaustion) {
     GPROptions options;
     options.optimize = false;
     GaussianProcessRegressor<RBF> model(RBF{}, options);
-    model.fit(x, y);
+    ASSERT_TRUE(model.fit(x, y));
 
     const ParameterGrid grid{{0.0, 1.0, 2.0}, {0.0}};
     const PredictedMean acquisition;
@@ -539,7 +539,7 @@ TEST(Acquisition, SuggestValidatesModelAndCandidates) {
     options.optimize = false;
     GaussianProcessRegressor<RBF> model(RBF{}, options);
     EXPECT_THROW(suggest(model, acquisition, x), std::logic_error);
-    model.fit(x, y);
+    ASSERT_TRUE(model.fit(x, y));
     EXPECT_THROW(suggest(model, acquisition, Matrix(0, 1)), std::invalid_argument);
     EXPECT_THROW(suggest(model, acquisition, (ParameterGrid{{0.0}})), std::invalid_argument);
 
@@ -557,7 +557,7 @@ TEST(Acquisition, SuggestValidatesModelAndCandidates) {
     Matrix targets(x.rows(), 2);
     targets.col(0) = y;
     targets.col(1) = y;
-    model.fit(x, targets);
+    ASSERT_TRUE(model.fit(x, targets));
     EXPECT_THROW(suggest(model, acquisition, x), std::invalid_argument);
 }
 } // namespace

@@ -388,7 +388,7 @@ Matrix X(4, 2);
 X << 0.0, 1.0, 0.0, 5.0, 0.5, 1.0, 0.5, 5.0;
 const Vector y = (X.col(0).array() - 0.3).square() + 0.1 * X.col(1).array();
 GaussianProcessRegressor<RBF> gp(RBF{});
-gp.fit(X, y);
+gp.fit(X, y).value();
 const EI acquisition(y.minCoeff());
 
 Matrix candidates(2, 2);

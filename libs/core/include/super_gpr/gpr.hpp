@@ -266,7 +266,7 @@ public:
     }
 
     Eigen::Index n_features_in() const {
-        require_fitted();
+        require_fitted().value();
         return x_.cols();
     }
 

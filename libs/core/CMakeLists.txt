@@ -1,4 +1,4 @@
-add_library(project_core src/cholesky.cpp src/optimizer.cpp)
+add_library(project_core src/optimizer.cpp)
 add_library(project::core ALIAS project_core)
 
 target_include_directories(
