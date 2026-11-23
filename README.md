@@ -373,6 +373,41 @@ auto result = minimize_lbfgsb(objective, Vector::Ones(2), bounds).value();
 L-BFGS-B 是局部优化器，EI/PI 在远离改善区域时可能几乎为零，建议提供覆盖搜索域的多个初值。
 默认 `kappa=2`，`xi=0`。采集优化目前使用单输出、已拟合的模型。
 
+### 离散候选点和格点
+
+`suggest` 在给定候选中选择采集值最优的点。候选矩阵每行一个点，每列一个特征。
+`ParameterGrid` 按特征列顺序接收各维的合法值，最后一维变化最快。
+搜索时分批生成笛卡尔积并遍历所有可用候选，候选数随各维取值数的乘积增长。
+
+```cpp
+#include <super_gpr/acquisition.hpp>
+
+using namespace super_gpr;
+
+Matrix X(4, 2);
+X << 0.0, 1.0, 0.0, 5.0, 0.5, 1.0, 0.5, 5.0;
+const Vector y = (X.col(0).array() - 0.3).square() + 0.1 * X.col(1).array();
+GaussianProcessRegressor<RBF> gp(RBF{});
+gp.fit(X, y);
+const EI acquisition(y.minCoeff());
+
+Matrix candidates(2, 2);
+candidates << 0.25, 1.0, 0.5, 3.0;
+auto next = suggest(gp, acquisition, candidates);
+
+const ParameterGrid grid{{0.0, 0.25, 0.5}, {1.0, 3.0, 5.0}};
+auto next_on_grid = suggest(gp, acquisition, grid);
+if (next_on_grid) {
+    SuggestOptions options;
+    options.excluded_indices = {next_on_grid.index};
+    next_on_grid = suggest(gp, acquisition, grid, options);
+}
+```
+
+结果的 `x` 和 `value` 分别是候选坐标和原始采集值。`index` 从零开始，对应候选矩阵行号，
+也可通过 `grid[index]` 取回格点。同分时选索引最小的候选。候选耗尽时，结果在布尔判断中为假，
+读取字段前可先检查 `if (next)`。`SuggestOptions::batch_size` 控制每次预测的候选数，默认 256。
+
 ## scikit-learn 对照与基准
 
 Python 仅用于可选对照测试，不是库的运行依赖：

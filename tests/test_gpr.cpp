@@ -442,4 +442,122 @@ TEST(Acquisition, OptimizationMatchesDenseGridAndNativeSign) {
         EXPECT_LE((result.value - best) * (function->maximize() ? -1.0 : 1.0), 1e-5);
     }
 }
+
+TEST(ParameterGrid, EnumeratesInFeatureOrderAndValidatesInputs) {
+    const ParameterGrid grid{{0.5, 0.0}, {3.0}, {5.0, 1.0}};
+    ASSERT_EQ(grid.dimensions(), 3);
+    ASSERT_EQ(grid.size(), 4);
+    Matrix expected(4, 3);
+    expected << 0.5, 3.0, 5.0, 0.5, 3.0, 1.0, 0.0, 3.0, 5.0, 0.0, 3.0, 1.0;
+    for (Eigen::Index index = 0; index < grid.size(); ++index) {
+        EXPECT_TRUE(grid[index].isApprox(expected.row(index).transpose()));
+    }
+    EXPECT_THROW(grid[-1], std::out_of_range);
+    EXPECT_THROW(grid[grid.size()], std::out_of_range);
+    EXPECT_THROW((ParameterGrid{}), std::invalid_argument);
+    EXPECT_THROW((ParameterGrid{{0.0}, {}}), std::invalid_argument);
+    EXPECT_THROW((ParameterGrid{{std::numeric_limits<double>::infinity()}}), std::invalid_argument);
+    const std::vector<std::vector<double>> oversized(std::numeric_limits<Eigen::Index>::digits, {0.0, 1.0});
+    EXPECT_THROW((ParameterGrid(oversized)), std::overflow_error);
+}
+
+TEST(Acquisition, SuggestMatchesExhaustiveScoringForCandidatesAndGrid) {
+    const Matrix x = training_x();
+    const Vector y = training_y();
+    GPROptions options;
+    options.normalize_y = true;
+    options.optimize = false;
+    GaussianProcessRegressor<RBF> model(RBF{}, options);
+    model.fit(x, y);
+
+    const ParameterGrid grid{{0.0, 0.4, 1.3}, {-0.2, 0.7}};
+    Matrix candidates(6, 2);
+    candidates << 0.0, -0.2, 0.0, 0.7, 0.4, -0.2, 0.4, 0.7, 1.3, -0.2, 1.3, 0.7;
+    const auto prediction = model.predict(candidates);
+    const EI ei(y.minCoeff(), 0.01);
+    const LCB lcb;
+    SuggestOptions search;
+    search.excluded_indices = {2, 0, 2};
+    for (const AcquisitionFunction *function : std::vector<const AcquisitionFunction *>{&ei, &lcb}) {
+        Eigen::Index expected_index = -1;
+        double expected_value = 0.0;
+        for (const Eigen::Index row : {1, 3, 4, 5}) {
+            const double value =
+                function->evaluate(prediction.mean(row, 0), prediction.standard_deviation(row, 0)).value;
+            if (expected_index < 0 ||
+                (function->maximize() ? value > expected_value : value < expected_value)) {
+                expected_index = row;
+                expected_value = value;
+            }
+        }
+        ASSERT_GE(expected_index, 4);
+        for (const Eigen::Index batch_size : {2, 3}) {
+            search.batch_size = batch_size;
+            for (const auto &next :
+                 {suggest(model, *function, candidates, search), suggest(model, *function, grid, search)}) {
+                ASSERT_TRUE(next);
+                EXPECT_EQ(next.index, expected_index);
+                EXPECT_TRUE(next.x.isApprox(candidates.row(expected_index).transpose()));
+                EXPECT_NEAR(next.value, expected_value, 1e-12);
+            }
+        }
+    }
+}
+
+TEST(Acquisition, SuggestUsesFirstAvailableTieAndReportsExhaustion) {
+    const Matrix x = training_x();
+    const Vector y = Vector::Zero(x.rows());
+    GPROptions options;
+    options.optimize = false;
+    GaussianProcessRegressor<RBF> model(RBF{}, options);
+    model.fit(x, y);
+
+    const ParameterGrid grid{{0.0, 1.0, 2.0}, {0.0}};
+    const PredictedMean acquisition;
+    const auto first = suggest(model, acquisition, grid);
+    ASSERT_TRUE(first);
+    EXPECT_EQ(first.index, 0);
+
+    SuggestOptions search;
+    search.batch_size = 1;
+    search.excluded_indices = {first.index};
+    const auto next = suggest(model, acquisition, grid, search);
+    ASSERT_TRUE(next);
+    EXPECT_EQ(next.index, 1);
+    EXPECT_TRUE(next.x.isApprox(grid[next.index]));
+
+    search.excluded_indices = {2, next.index, first.index};
+    EXPECT_FALSE(suggest(model, acquisition, grid, search));
+    EXPECT_FALSE(suggest(model, acquisition, Matrix(0, x.cols())));
+}
+
+TEST(Acquisition, SuggestValidatesModelAndCandidates) {
+    const Matrix x = training_x();
+    const Vector y = training_y();
+    const LCB acquisition;
+    GPROptions options;
+    options.optimize = false;
+    GaussianProcessRegressor<RBF> model(RBF{}, options);
+    EXPECT_THROW(suggest(model, acquisition, x), std::logic_error);
+    model.fit(x, y);
+    EXPECT_THROW(suggest(model, acquisition, Matrix(0, 1)), std::invalid_argument);
+    EXPECT_THROW(suggest(model, acquisition, (ParameterGrid{{0.0}})), std::invalid_argument);
+
+    SuggestOptions search;
+    search.excluded_indices = {x.rows()};
+    EXPECT_THROW(suggest(model, acquisition, x, search), std::invalid_argument);
+    search.excluded_indices.clear();
+    search.batch_size = 0;
+    EXPECT_THROW(suggest(model, acquisition, x, search), std::invalid_argument);
+
+    Matrix invalid = x;
+    invalid(0, 0) = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_THROW(suggest(model, acquisition, invalid), std::invalid_argument);
+
+    Matrix targets(x.rows(), 2);
+    targets.col(0) = y;
+    targets.col(1) = y;
+    model.fit(x, targets);
+    EXPECT_THROW(suggest(model, acquisition, x), std::invalid_argument);
+}
 } // namespace

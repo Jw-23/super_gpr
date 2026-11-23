@@ -265,6 +265,11 @@ public:
         return predict_kernel(kernel_, x, return_covariance, true);
     }
 
+    Eigen::Index n_features_in() const {
+        require_fitted();
+        return x_.cols();
+    }
+
     // Condition a constituent prior on the same joint observations and factorization.
     template <class Component>
     GPRResult<Prediction> predict_component(const Component &component, const Matrix &x,
