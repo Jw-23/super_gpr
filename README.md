@@ -33,7 +33,7 @@ target_link_libraries(your_application PRIVATE super_gpr::super_gpr)
 独立的 `minimize_lbfgsb()` 返回 `LBFGSBResult`。先检查结果，再通过 `value()`
 取成功值或通过 `error()` 取 `GPRError` 或 `OptimizationError`。
 在返回相同错误类型的函数中，可用 `BOOST_OUTCOME_TRY` 向上传递错误。
-用户提供的 Kernel 和目标函数回调抛出的异常仍原样传播。
+自定义目标函数可以直接返回 `ObjectiveResult`，优化器会传递其中的错误。
 
 启用 clang-tidy 目标：
 
@@ -56,8 +56,8 @@ Matrix x(5, 1); // Rows are samples, columns are features.
 x << -2.0, -1.0, 0.0, 1.0, 2.0;
 Vector y = (x.col(0).array() - 0.3).square();
 
-auto kernel = ConstantKernel({1.0, 1e-3, 1e3}) * RBF({0.8, 0.1, 10.0})
-            + WhiteKernel({0.01, 1e-6, 1.0});
+auto kernel = ConstantKernel::create({1.0, 1e-3, 1e3}).value() * RBF::create({0.8, 0.1, 10.0}).value()
+            + WhiteKernel::create({0.01, 1e-6, 1.0}).value();
 GPROptions options;
 options.normalize_y = true;
 options.optimizer_restarts = 2;
@@ -114,22 +114,23 @@ GaussianProcessRegressor<BoxedKernel> gp(boxed);
 ### 超参数
 
 `Parameter{value, lower, upper}` 使用原始物理量，默认 `{1.0, 1e-5, 1e5}`。
-`Parameter::fixed(value)` 排除优化，也可用相同的上下界表示固定参数。
+`Parameter::fixed(value)` 排除优化，也可用相同的上下界表示固定参数。使用无参数构造可得到默认核；
+手动指定参数时用 `RBF::create(...)` 等工厂，检查返回的 `GPRResult`。
 
 ```cpp
-RBF isotropic({0.7, 0.1, 10.0});
-RBF ard(std::vector<Parameter>{{0.7, 0.1, 10.0}, Parameter::fixed(1.2)});
-Matern matern({0.8, 0.1, 10.0}, 2.5);
-RationalQuadratic rq({0.8}, {1.4}); // Length scale, alpha.
-ExpSineSquared periodic({0.8}, {1.7}); // Length scale, period.
+auto isotropic = RBF::create({0.7, 0.1, 10.0}).value();
+auto ard = RBF::create(std::vector<Parameter>{{0.7, 0.1, 10.0}, Parameter::fixed(1.2)}).value();
+auto matern = Matern::create({0.8, 0.1, 10.0}, 2.5).value();
+auto rq = RationalQuadratic::create({0.8}, {1.4}).value(); // Length scale, alpha.
+auto periodic = ExpSineSquared::create({0.8}, {1.7}).value(); // Length scale, period.
 ```
 
 `theta()`、`bounds()`、`set_theta()` 和 `gradient()` 使用**对数超参数坐标**。
-固定参数不占 theta 或梯度位置。组合按左子树、右子树拼接。
+`set_theta()` 返回 `GPRResult<void>`。固定参数不占 theta 或梯度位置。组合按左子树、右子树拼接。
 `RationalQuadratic` 的 theta 顺序为 alpha、length scale，与 scikit-learn 一致，
 其构造参数顺序仍为 length scale、alpha。
 
-`covariance(k, X)` 构造训练/先验协方差；`covariance(k, X, Y)` 构造交叉协方差。
+`covariance(k, X)` 和 `covariance(k, X, Y)` 分别返回训练/先验和交叉协方差的 `GPRResult<Matrix>`。
 `WhiteKernel` 仅在前者的对角线上产生噪声，即使 X 与 Y 的坐标完全相同，后者仍为零。
 
 ### 自定义解析 Kernel
@@ -158,13 +159,16 @@ auto combined = linear * RBF{};
 
 接口契约：
 
-- `parameter_count()`、`theta()`、`bounds()`、`set_theta(Point)`：参数数量、对数参数与边界。
-- `value(Point x, Point y, bool same_observation)`：核值。`same_observation` 表示同一个观测索引，非坐标相等。
-- `gradient(x, y, same_observation, Gradient out)`：写入 `dk/dlog(parameter)`。
-- `input_gradient(x, y, Gradient out)`：写入交叉协方差对第一个输入 x 的偏导。
-- `diagonal_gradient(x, Gradient out)`：写入 `d[k(x,x)]/dx`，包含两个输入同时变化的贡献。
+- `parameter_count()`、`theta()`、`bounds()`：参数数量、对数参数与边界。
+- `set_theta(Point)` 返回 `GPRResult<void>`。可选的 `validate_input(Eigen::Index)` 返回同一类型，
+  供模型和协方差入口一次校验特征维数。
+- `value(Point x, Point y, bool same_observation)` 返回 `GPRResult<double>`。`same_observation` 表示同一个观测索引，非坐标相等。
+- `gradient(x, y, same_observation, Gradient out)` 返回 `GPRResult<void>` 并写入 `dk/dlog(parameter)`。
+- `input_gradient(x, y, Gradient out)` 返回 `GPRResult<void>` 并写入交叉协方差对第一个输入 x 的偏导。
+- `diagonal_gradient(x, Gradient out)` 返回 `GPRResult<void>` 并写入 `d[k(x,x)]/dx`，包含两个输入同时变化的贡献。
 
-自定义核须对称并适合作为协方差；所有梯度回调必须完整写入输出。`Point` 和 `Gradient`
+直接实现自定义核类型时，提供对应的 `*_unchecked` 数值方法。GPR 在进入数值循环前校验输入维数。
+自定义核须对称并适合作为协方差，所有梯度回调必须完整写入输出。`Point` 和 `Gradient`
 是 Eigen 视图，不应保存到调用范围之外。`Matern(nu=0.5)` 在重合点不可微，输入导数取零。
 
 ## Additive GP：变量组上的核相加
@@ -185,10 +189,10 @@ LML 联合优化。不会为各组分别拟合一份完整 y。变量分组由�
 using namespace super_gpr;
 std::vector<FeatureGroup> groups{{0, 1}, {2, 3}};
 auto additive = make_additive_kernel(
-    groups, ConstantKernel({0.5, 1e-5, 100.0}) * RBF({0.7, 0.1, 20.0}));
+    groups, ConstantKernel::create({0.5, 1e-5, 100.0}).value() * RBF::create({0.7, 0.1, 20.0}).value()).value();
 GPROptions options;
 options.normalize_y = true;
-auto gp = make_additive_gp(additive, {0.001, 1e-8, 0.5}, options);
+auto gp = make_additive_gp(additive, {0.001, 1e-8, 0.5}, options).value();
 gp.fit(x, y).value(); // x has four columns; y contains only the total scalar target.
 auto total = gp.predict(query, true).value();
 
@@ -208,17 +212,17 @@ auto cross = gp.component_cross_covariance(components[0], components[1], query).
 原有组合子仍然适用，例如：
 
 ```cpp
-auto explicit_sum = SubspaceKernel<RBF>(RBF{}, {0, 1})
-                  + SubspaceKernel<Matern>(Matern({}, 2.5), {2, 3});
-auto hybrid = additive + ConstantKernel({0.01, 1e-6, 1.0}) * RBF({2.0, 0.1, 100.0})
-             + WhiteKernel({0.001, 1e-8, 0.5});
+auto explicit_sum = SubspaceKernel<RBF>::create(RBF{}, {0, 1}).value()
+                  + SubspaceKernel<Matern>::create(Matern::create(Parameter{}, 2.5).value(), {2, 3}).value();
+auto hybrid = additive + ConstantKernel::create({0.01, 1e-6, 1.0}).value() * RBF::create({2.0, 0.1, 100.0}).value()
+             + WhiteKernel::create({0.001, 1e-8, 0.5}).value();
 GaussianProcessRegressor<decltype(hybrid)> hybrid_gp(hybrid, options);
 ```
 
 上例的全局核用于建模跨组交互，其幅度也参与 LML 优化。`make_additive_gp` 是普通
 `GaussianProcessRegressor<AddKernel<AdditiveKernel<K>, WhiteKernel>>` 的构造便捷函数，
-没有额外的训练算法。需要每组不同初值时，直接构造
-`AdditiveKernel<K>(std::vector<SubspaceKernel<K>>{...})`。
+没有额外的训练算法。需要每组不同初值时，使用
+`AdditiveKernel<K>::create(std::vector<SubspaceKernel<K>>{...})`。
 
 各分量的后验均值使用共享系数 `alpha = K_total^-1 y_normalized`。
 `predict_component` 返回不带全局均值偏置的分量贡献，恢复原始目标的尺度；
@@ -245,10 +249,10 @@ Cov(g_i(X*), g_j(X*) | y) = -k_i(X*, X) K_total^-1 k_j(X, X*)
 
 ```cpp
 std::vector<FeatureGroup> groups{{0, 1}, {2, 3}};
-auto prototype = ConstantKernel({0.5, 1e-5, 100.0})
-               * RBF(std::vector<Parameter>{{0.7, 0.1, 20.0}, {0.7, 0.1, 20.0}});
-auto shared = make_shared_additive_kernel(groups, prototype);
-auto gp = make_additive_gp(shared, {0.001, 1e-8, 0.5}, options);
+auto prototype = ConstantKernel::create({0.5, 1e-5, 100.0}).value()
+               * RBF::create(std::vector<Parameter>{{0.7, 0.1, 20.0}, {0.7, 0.1, 20.0}}).value();
+auto shared = make_shared_additive_kernel(groups, prototype).value();
+auto gp = make_additive_gp(shared, {0.001, 1e-8, 0.5}, options).value();
 ```
 
 这里优化 1 个共同幅度、2 个组内位置长度尺度和 1 个噪声，共 4 个超参数。
@@ -260,7 +264,7 @@ auto gp = make_additive_gp(shared, {0.001, 1e-8, 0.5}, options);
 需要保留组间差异时，可为对数超参数配置可选 Gaussian 收缩先验：
 
 ```cpp
-auto kernel = make_additive_kernel(groups, prototype) + WhiteKernel({0.001, 1e-8, 0.5});
+auto kernel = make_additive_kernel(groups, prototype).value() + WhiteKernel::create({0.001, 1e-8, 0.5}).value();
 GPROptions regularized;
 regularized.normalize_y = true;
 regularized.prior.mean = kernel.theta();
@@ -339,7 +343,7 @@ More–Thuente 线搜索。与 SciPy 的实现可能采用不同迭代路径。
 #include <super_gpr/optimizer.hpp>
 
 using namespace super_gpr;
-Objective objective = [](const Vector& x, Vector& gradient) {
+Objective objective = [](const Vector& x, Vector& gradient) -> ObjectiveResult {
     gradient = 2.0 * x;
     return x.squaredNorm();
 };
@@ -349,7 +353,7 @@ auto result = minimize_lbfgsb(objective, Vector::Ones(2), bounds).value();
 
 支持无穷边界、上下界相等的固定坐标、初值投影和零维问题。回调须返回目标值并写入梯度。
 `OptimizationResult` 包含解、目标值、梯度、迭代数、评估次数和状态。
-线搜索失败时返回已评估的最佳有限点并标记失败；用户回调抛出的异常继续传播。
+线搜索失败时返回已评估的最佳有限点并标记失败。目标函数可返回 `ObjectiveResult`，第三方回调异常会转换为 `OptimizationError::CallbackFailed`。
 `memory=10`、`max_iterations=1000`、`max_line_search=40`、`gradient_tolerance=1e-5`、
 `function_tolerance=2.220446049250313e-9`。函数容差设为零可关闭函数变化量停止条件。
 
@@ -376,7 +380,8 @@ L-BFGS-B 是局部优化器，EI/PI 在远离改善区域时可能几乎为零�
 ### 离散候选点和格点
 
 `suggest` 在给定候选中选择采集值最优的点。候选矩阵每行一个点，每列一个特征。
-`ParameterGrid` 按特征列顺序接收各维的合法值，最后一维变化最快。
+`ParameterGrid::create()` 按特征列顺序接收各维的合法值，最后一维变化最快。
+创建格点、读取格点坐标以及调用 `suggest()` 都返回 `GPRResult`。
 搜索时分批生成笛卡尔积并遍历所有可用候选，候选数随各维取值数的乘积增长。
 
 ```cpp
@@ -393,20 +398,21 @@ const EI acquisition(y.minCoeff());
 
 Matrix candidates(2, 2);
 candidates << 0.25, 1.0, 0.5, 3.0;
-auto next = suggest(gp, acquisition, candidates);
+auto next = suggest(gp, acquisition, candidates).value();
 
-const ParameterGrid grid{{0.0, 0.25, 0.5}, {1.0, 3.0, 5.0}};
-auto next_on_grid = suggest(gp, acquisition, grid);
+const auto grid = ParameterGrid::create({{0.0, 0.25, 0.5}, {1.0, 3.0, 5.0}}).value();
+auto next_on_grid = suggest(gp, acquisition, grid).value();
 if (next_on_grid) {
     SuggestOptions options;
     options.excluded_indices = {next_on_grid.index};
-    next_on_grid = suggest(gp, acquisition, grid, options);
+    next_on_grid = suggest(gp, acquisition, grid, options).value();
 }
 ```
 
 结果的 `x` 和 `value` 分别是候选坐标和原始采集值。`index` 从零开始，对应候选矩阵行号，
-也可通过 `grid[index]` 取回格点。同分时选索引最小的候选。候选耗尽时，结果在布尔判断中为假，
-读取字段前可先检查 `if (next)`。`SuggestOptions::batch_size` 控制每次预测的候选数，默认 256。
+也可通过 `grid[index]` 的成功值取回格点。同分时选索引最小的候选。先检查 `GPRResult`
+是否成功，再检查其中的 `Suggestion` 是否存在。候选耗尽时返回成功结果，其中的
+`Suggestion` 在布尔判断中为假。`SuggestOptions::batch_size` 控制每次预测的候选数，默认 256。
 
 ## scikit-learn 对照与基准
 

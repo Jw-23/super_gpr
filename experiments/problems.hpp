@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 #include <random>
 #include <string>
 #include <super_gpr/additive.hpp>
@@ -9,6 +10,29 @@
 
 namespace super_gpr_experiments {
 using namespace super_gpr;
+
+struct ExperimentError {
+    ExperimentError(const char *text) : message(text) {}
+    ExperimentError(GPRError code) : gpr(code) {}
+
+    const char *message = nullptr;
+    GPRError gpr = GPRError::InvalidTrainingShape;
+};
+
+template <class T> using ExperimentResult = boost::outcome_v2::std_checked<T, ExperimentError>;
+
+inline int report_experiment(const ExperimentResult<void> &result) {
+    if (result) {
+        return 0;
+    }
+    const auto &error = result.error();
+    if (error.message) {
+        std::cerr << error.message << '\n';
+    } else {
+        std::cerr << "GPR experiment failed (GPRError " << static_cast<int>(error.gpr) << ")\n";
+    }
+    return 1;
+}
 
 struct Dataset {
     Matrix train_x;

@@ -40,7 +40,7 @@ template <class K> void kernel_matrix(benchmark::State &state) {
     const K kernel(ConstantKernel{} * RBF{} + WhiteKernel{});
     for (auto iteration : state) {
         (void)iteration;
-        const Matrix result = covariance(kernel, x);
+        const Matrix result = covariance(kernel, x).value();
         benchmark::DoNotOptimize(result.data());
         benchmark::ClobberMemory();
     }
@@ -59,7 +59,7 @@ void likelihood_gradient(benchmark::State &state) {
     const Vector y = x.col(0).array().sin();
     GPROptions options;
     options.optimize = false;
-    auto kernel = ConstantKernel{} * RBF{} + WhiteKernel({0.01});
+    auto kernel = ConstantKernel{} * RBF{} + WhiteKernel::create({0.01}).value();
     GaussianProcessRegressor<decltype(kernel)> model(kernel, options);
     model.fit(x, y).value();
     const Vector theta = kernel.theta();
@@ -98,11 +98,11 @@ template <bool Strided> void shared_additive_likelihood_gradient(benchmark::Stat
         }
     }
     const Vector y = x.col(0).array().sin();
-    const auto component = ConstantKernel(Parameter{0.05}) *
-                           RBF(std::vector<Parameter>(group_size, Parameter{0.7}));
+    const auto component = ConstantKernel::create(Parameter{0.05}).value() *
+                           RBF::create(std::vector<Parameter>(group_size, Parameter{0.7})).value();
     GPROptions options;
     options.optimize = false;
-    auto model = make_additive_gp(make_shared_additive_kernel(groups, component), {0.001, 1e-8, 0.5}, options);
+    auto model = make_additive_gp(make_shared_additive_kernel(groups, component).value(), {0.001, 1e-8, 0.5}, options).value();
     model.fit(x, y).value();
     const Vector theta = model.kernel().theta();
     for (auto iteration : state) {

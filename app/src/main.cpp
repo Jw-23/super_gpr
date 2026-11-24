@@ -7,7 +7,10 @@ super_gpr::GPRResult<void> run_example() {
     Matrix x(6, 1);
     x << 0.0, 0.8, 1.6, 2.4, 3.2, 4.0;
     const Vector y = x.col(0).array().sin();
-    auto kernel = ConstantKernel({1.0, 1e-3, 1e3}) * RBF({1.0, 0.1, 10.0}) + WhiteKernel({1e-4, 1e-8, 0.1});
+    BOOST_OUTCOME_TRY(auto amplitude, ConstantKernel::create({1.0, 1e-3, 1e3}));
+    BOOST_OUTCOME_TRY(auto radial, RBF::create({1.0, 0.1, 10.0}));
+    BOOST_OUTCOME_TRY(auto noise, WhiteKernel::create({1e-4, 1e-8, 0.1}));
+    auto kernel = amplitude * radial + noise;
     GPROptions options;
     options.normalize_y = true;
     GaussianProcessRegressor<decltype(kernel)> model(kernel, options);
@@ -30,14 +33,11 @@ super_gpr::GPRResult<void> run_example() {
 }
 } // namespace
 
-int main() try {
+int main() {
     const auto result = run_example();
     if (!result) {
         std::cerr << "GPR example failed (GPRError " << static_cast<int>(result.error()) << ")\n";
         return 1;
     }
     return 0;
-} catch (const std::exception &error) {
-    std::cerr << error.what() << '\n';
-    return 1;
 }

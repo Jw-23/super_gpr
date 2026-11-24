@@ -74,27 +74,31 @@ Dataset dataset(const Scenario &scenario, Eigen::Index test_count) {
 }
 
 template <class K>
-FitResult fit_kernel(K kernel, const GPROptions &options, const Matrix &x, const Vector &y,
+ExperimentResult<FitResult> fit_kernel(K kernel, const GPROptions &options, const Matrix &x, const Vector &y,
                      const Matrix &query) {
     GaussianProcessRegressor<K> model(std::move(kernel), options);
     const auto start = std::chrono::steady_clock::now();
-    model.fit(x, y).value();
+    BOOST_OUTCOME_TRY(model.fit(x, y));
     FitResult result;
     result.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    result.prediction = model.predict(query).value().mean.col(0);
+    BOOST_OUTCOME_TRY(auto prediction, model.predict(query));
+    BOOST_OUTCOME_TRY(auto training, model.predict(x));
+    result.prediction = prediction.mean.col(0);
     result.train_rmse =
-        std::sqrt((model.predict(x).value().mean.col(0) - y).squaredNorm() / static_cast<double>(y.size()));
+        std::sqrt((training.mean.col(0) - y).squaredNorm() / static_cast<double>(y.size()));
     result.parameters = model.kernel().theta().array().exp();
     const double noise = result.parameters[result.parameters.size() - 1];
     result.noise_std = std::sqrt(noise * (y.array() - y.mean()).square().mean());
-    Matrix covariance = super_gpr::covariance(model.kernel(), x);
+    BOOST_OUTCOME_TRY(auto covariance, super_gpr::covariance(model.kernel(), x));
     covariance.diagonal().array() += options.alpha;
     detail::Cholesky factor;
-    factor.compute(std::move(covariance)).value();
+    BOOST_OUTCOME_TRY(factor.compute(std::move(covariance)));
     const Eigen::MatrixXd inverse = std::move(factor).take_inverse_lower();
     result.effective_df = static_cast<double>(x.rows()) - (noise + options.alpha) * inverse.trace();
-    result.lml = model.log_marginal_likelihood().value();
-    result.objective = model.log_posterior().value();
+    BOOST_OUTCOME_TRY(auto lml, model.log_marginal_likelihood());
+    BOOST_OUTCOME_TRY(auto objective, model.log_posterior());
+    result.lml = lml;
+    result.objective = objective;
     for (const auto &optimization : model.optimization_results()) {
         result.iterations += optimization.iterations;
         result.evaluations += optimization.evaluations;
@@ -103,7 +107,7 @@ FitResult fit_kernel(K kernel, const GPROptions &options, const Matrix &x, const
     return result;
 }
 
-FitResult fit(const Candidate &candidate, const Matrix &x, const Vector &y, const Matrix &query) {
+ExperimentResult<FitResult> fit(const Candidate &candidate, const Matrix &x, const Vector &y, const Matrix &query) {
     GPROptions options;
     options.normalize_y = true;
     options.optimizer.max_iterations = 500;
@@ -111,15 +115,18 @@ FitResult fit(const Candidate &candidate, const Matrix &x, const Vector &y, cons
     const auto groups = feature_groups(x.cols());
     const auto count = static_cast<double>(groups.size());
     const Parameter scale{0.7, 0.1, 20.0};
-    const WhiteKernel noise({0.001, 1e-8, 0.5});
+    BOOST_OUTCOME_TRY(auto noise, WhiteKernel::create({0.001, 1e-8, 0.5}));
     if (candidate.mode == Mode::SharedIsotropic || candidate.mode == Mode::SharedARD) {
         const std::size_t dimensions = candidate.mode == Mode::SharedARD ? 4 : 1;
-        auto component = ConstantKernel({1.0 / count, 1e-5 / count, 100.0 / count}) *
-                         RBF(std::vector<Parameter>(dimensions, scale));
-        return fit_kernel(make_shared_additive_kernel(groups, component) + noise, options, x, y, query);
+        BOOST_OUTCOME_TRY(auto amplitude, ConstantKernel::create({1.0 / count, 1e-5 / count, 100.0 / count}));
+        BOOST_OUTCOME_TRY(auto radial, RBF::create(std::vector<Parameter>(dimensions, scale)));
+        BOOST_OUTCOME_TRY(auto shared, make_shared_additive_kernel(groups, amplitude * radial));
+        return fit_kernel(shared + noise, options, x, y, query);
     }
-    const auto component = ConstantKernel({1.0 / count, 1e-5, 100.0}) * RBF(scale);
-    auto kernel = make_additive_kernel(groups, component) + noise;
+    BOOST_OUTCOME_TRY(auto amplitude, ConstantKernel::create({1.0 / count, 1e-5, 100.0}));
+    BOOST_OUTCOME_TRY(auto radial, RBF::create(scale));
+    BOOST_OUTCOME_TRY(auto additive, make_additive_kernel(groups, amplitude * radial));
+    auto kernel = additive + noise;
     if (candidate.mode == Mode::Regularized) {
         options.prior.mean = kernel.theta();
         options.prior.standard_deviation = Vector::Constant(kernel.parameter_count(), candidate.prior_scale);
@@ -188,7 +195,7 @@ std::vector<FoldData> folds(const Matrix &x, const Vector &y, std::uint64_t seed
     return result;
 }
 
-std::vector<double> cross_validate(const Scenario &scenario, const Matrix &x, const Vector &y) {
+ExperimentResult<std::vector<double>> cross_validate(const Scenario &scenario, const Matrix &x, const Vector &y) {
     const auto split = folds(x, y, scenario.seed);
     std::vector<double> scores;
     scores.reserve(candidates().size());
@@ -196,7 +203,7 @@ std::vector<double> cross_validate(const Scenario &scenario, const Matrix &x, co
         double squared_error = 0.0;
         int fold_index = 0;
         for (const auto &fold : split) {
-            const auto result = fit(candidate, fold.train_x, fold.train_y, fold.validation_x);
+            BOOST_OUTCOME_TRY(auto result, fit(candidate, fold.train_x, fold.train_y, fold.validation_x));
             squared_error += (result.prediction - fold.validation_y).squaredNorm();
             emit(scenario, candidate, "cv", fold_index++, false, 0.0, fold.train_x.rows(), fold.validation_y,
                  result);
@@ -206,29 +213,28 @@ std::vector<double> cross_validate(const Scenario &scenario, const Matrix &x, co
     return scores;
 }
 
-void evaluate(const Scenario &scenario, Eigen::Index test_count) {
+ExperimentResult<void> evaluate(const Scenario &scenario, Eigen::Index test_count) {
     const auto data = dataset(scenario, test_count);
-    const auto scores = cross_validate(scenario, data.train_x, data.train_y);
+    BOOST_OUTCOME_TRY(auto scores, cross_validate(scenario, data.train_x, data.train_y));
     const auto best = static_cast<std::size_t>(
         std::distance(scores.begin(), std::min_element(scores.begin(), scores.end())));
     // The winner is locked using training folds before any test predictions are evaluated.
     for (std::size_t index = 0; index < candidates().size(); ++index) {
         const auto &candidate = candidates()[index];
-        const auto result = fit(candidate, data.train_x, data.train_y, data.test_x);
+        BOOST_OUTCOME_TRY(auto result, fit(candidate, data.train_x, data.train_y, data.test_x));
         emit(scenario, candidate, "test", -1, index == best, scores[index], data.train_x.rows(), data.test_y,
              result);
     }
     std::cerr << scenario.function << " d=" << scenario.dimension << " n=" << scenario.train_count
               << " seed=" << scenario.seed << " selected=" << candidates()[best].name
               << " cv_rmse=" << scores[best] << '\n';
+    return boost::outcome_v2::success();
 }
-} // namespace
-
-int main(int argc, char **argv) try {
+ExperimentResult<void> run(int argc, char **argv) {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) -- argc guards argv access.
     const bool quick = argc == 2 && std::string(argv[1]) == "--quick";
     if (argc != 1 && !quick) {
-        throw std::invalid_argument("Usage: additive_improvement [--quick]");
+        return boost::outcome_v2::failure(ExperimentError("Usage: additive_improvement [--quick]"));
     }
     std::cout << std::setprecision(12)
               << "function,dimension,train_count,seed,candidate,phase,fold,selected,validation_rmse,fit_"
@@ -244,22 +250,24 @@ int main(int argc, char **argv) try {
     for (auto dimension : dimensions) {
         for (auto count : counts) {
             for (auto seed : seeds) {
-                evaluate({"additive", dimension, count, seed}, test_count);
+                BOOST_OUTCOME_TRY(evaluate({"additive", dimension, count, seed}, test_count));
             }
         }
     }
     if (!quick) {
         for (auto count : counts) {
             for (auto seed : seeds) {
-                evaluate({"heterogeneous", 80, count, seed}, test_count);
+                BOOST_OUTCOME_TRY(evaluate({"heterogeneous", 80, count, seed}, test_count));
             }
         }
         for (auto seed : seeds) {
-            evaluate({"interaction", 80, 256, seed}, test_count);
+            BOOST_OUTCOME_TRY(evaluate({"interaction", 80, 256, seed}, test_count));
         }
     }
-    return 0;
-} catch (const std::exception &error) {
-    std::cerr << error.what() << '\n';
-    return 1;
+    return boost::outcome_v2::success();
+}
+} // namespace
+
+int main(int argc, char **argv) {
+    return super_gpr_experiments::report_experiment(run(argc, argv));
 }

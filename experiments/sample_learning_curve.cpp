@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -17,7 +18,7 @@ struct Options {
     std::string bbob_directory;
     std::vector<std::uint64_t> seeds{5003, 6007, 7001};
 };
-Options parse_options(int argc, char **argv) {
+ExperimentResult<Options> parse_options(int argc, char **argv) {
     Options result;
     for (int index = 1; index < argc; ++index) {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) -- argc bounds argv access.
@@ -31,16 +32,16 @@ Options parse_options(int argc, char **argv) {
         } else if (argument == "--plain-matern25") {
             result.plain_matern = true;
         } else if (argument.compare(0, 7, "--seed=") == 0) {
-            const auto value = argument.substr(7);
-            std::size_t end = 0;
-            const auto seed = std::stoull(value, &end);
-            if (end != value.size()) {
-                throw std::invalid_argument("Invalid seed");
+            std::istringstream input(argument.substr(7));
+            std::uint64_t seed = 0;
+            if (!(input >> seed) || !input.eof()) {
+                return boost::outcome_v2::failure(ExperimentError("Invalid seed"));
             }
             result.seeds = {seed};
         } else {
-            throw std::invalid_argument("Usage: sample_learning_curve [--quick] [--seed=integer] "
-                                        "[--plain-matern25] [--suite] [--bbob-data=directory]");
+            return boost::outcome_v2::failure(ExperimentError(
+                "Usage: sample_learning_curve [--quick] [--seed=integer] "
+                "[--plain-matern25] [--suite] [--bbob-data=directory]"));
         }
     }
     if (result.quick && result.seeds.size() != 1) {
@@ -93,7 +94,7 @@ struct Diagnostic {
 };
 
 template <class K>
-void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, Eigen::Index count,
+ExperimentResult<void> evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, Eigen::Index count,
               const K &kernel, std::uint64_t training_checksum, std::uint64_t test_checksum,
               const std::string &function, const Diagnostic &diagnostic = {}) {
     const Matrix x = data.train_x.topRows(count);
@@ -105,11 +106,11 @@ void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, 
     GaussianProcessRegressor<K> model(kernel, options);
     std::cerr << "Starting seed=" << seed << " n=" << count << " model=" << name << '\n';
     const auto start = std::chrono::steady_clock::now();
-    model.fit(x, y).value();
+    BOOST_OUTCOME_TRY(model.fit(x, y));
     const double fit_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     const auto predict_start = std::chrono::steady_clock::now();
-    const auto prediction = model.predict(data.test_x).value();
+    BOOST_OUTCOME_TRY(auto prediction, model.predict(data.test_x));
     const double predict_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - predict_start).count();
     const Vector residual = prediction.mean.col(0) - data.test_y;
@@ -123,8 +124,9 @@ void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, 
     std::sort(absolute.begin(), absolute.end());
     const auto quantile_index =
         static_cast<std::size_t>(std::ceil(0.95 * static_cast<double>(absolute.size()))) - 1;
+    BOOST_OUTCOME_TRY(auto fitted, model.predict(x));
     const double train_rmse =
-        std::sqrt((model.predict(x).value().mean.col(0) - y).squaredNorm() / static_cast<double>(count));
+        std::sqrt((fitted.mean.col(0) - y).squaredNorm() / static_cast<double>(count));
     const Vector parameters = model.kernel().theta().array().exp();
     const double noise_std =
         std::sqrt(parameters[parameters.size() - 1] * (y.array() - y.mean()).square().mean());
@@ -136,12 +138,13 @@ void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, 
         evaluations += result.evaluations;
         converged = converged && result.converged();
     }
+    BOOST_OUTCOME_TRY(auto lml, model.log_marginal_likelihood());
     std::cout << data.train_x.cols() << ',' << count << ',' << data.test_x.rows() << ',' << seed << ','
               << name << ',' << parameters.size() << ',' << rmse << ',' << std::sqrt(error / variance) << ','
               << 1.0 - error / variance << ',' << residual.cwiseAbs().mean() << ','
               << absolute[quantile_index] << ',' << absolute.back() << ',' << train_rmse << ',' << noise_std
               << ',' << fit_seconds << ',' << predict_seconds << ',' << iterations << ',' << evaluations
-              << ',' << converged << ',' << model.log_marginal_likelihood().value() << ',' << training_checksum << ','
+              << ',' << converged << ',' << lml << ',' << training_checksum << ','
               << test_checksum << ',';
     for (Eigen::Index index = 0; index < parameters.size(); ++index) {
         if (index != 0) {
@@ -151,7 +154,8 @@ void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, 
     }
     std::cout << ',' << function << ',' << diagnostic.instance;
     if (diagnostic.x.rows() > 0) {
-        const Vector local_error = model.predict(diagnostic.x).value().mean.col(0) - diagnostic.y;
+        BOOST_OUTCOME_TRY(auto local, model.predict(diagnostic.x));
+        const Vector local_error = local.mean.col(0) - diagnostic.y;
         const double local_mse = local_error.squaredNorm() / static_cast<double>(local_error.size());
         const double global_variance = variance / static_cast<double>(residual.size());
         const double local_variance = (diagnostic.y.array() - diagnostic.y.mean()).square().mean();
@@ -166,43 +170,48 @@ void evaluate(const std::string &name, std::uint64_t seed, const Dataset &data, 
     std::cerr << "Finished seed=" << seed << " n=" << count << " model=" << name
               << " R2=" << 1.0 - error / variance << " RMSE=" << rmse << " seconds=" << fit_seconds
               << " converged=" << converged << '\n';
+    return boost::outcome_v2::success();
 }
 
-void evaluate_models(std::uint64_t seed, const Dataset &data, const std::vector<Eigen::Index> &counts,
-                     bool plain_matern, bool suite, const std::string &function,
-                     const Diagnostic &diagnostic = {}) {
+ExperimentResult<void> evaluate_models(std::uint64_t seed, const Dataset &data,
+                                      const std::vector<Eigen::Index> &counts, bool plain_matern, bool suite,
+                                      const std::string &function, const Diagnostic &diagnostic = {}) {
     const auto training_checksum = checksum(data.train_x, data.train_y);
     const auto test_checksum = checksum(data.test_x, data.test_y);
+    BOOST_OUTCOME_TRY(auto noise, WhiteKernel::create({0.001, 1e-8, 0.5}));
     if (plain_matern || suite) {
-        const auto kernel = ConstantKernel({1.0, 1e-5, 100.0}) * Matern({1.0, 0.1, 100.0}, 2.5) +
-                            WhiteKernel({0.001, 1e-8, 0.5});
+        BOOST_OUTCOME_TRY(auto amplitude, ConstantKernel::create({1.0, 1e-5, 100.0}));
+        BOOST_OUTCOME_TRY(auto radial, Matern::create({1.0, 0.1, 100.0}, 2.5));
+        const auto kernel = amplitude * radial + noise;
         for (auto count : counts) {
-            evaluate("plain_matern25", seed, data, count, kernel, training_checksum, test_checksum, function,
-                     diagnostic);
+            BOOST_OUTCOME_TRY(evaluate("plain_matern25", seed, data, count, kernel, training_checksum,
+                                       test_checksum, function, diagnostic));
         }
         if (!suite) {
-            return;
+            return boost::outcome_v2::success();
         }
     }
     const auto groups = feature_groups(data.train_x.cols());
     const auto group_count = static_cast<double>(groups.size());
-    const WhiteKernel noise({0.001, 1e-8, 0.5});
-    const auto independent = make_additive_kernel(groups, ConstantKernel({1.0 / group_count, 1e-5, 100.0}) *
-                                                              RBF({0.7, 0.1, 20.0})) +
-                             noise;
-    const auto shared =
-        make_shared_additive_kernel(
-            groups, ConstantKernel({1.0 / group_count, 1e-5 / group_count, 100.0 / group_count}) *
-                        RBF(std::vector<Parameter>(4, {0.7, 0.1, 20.0}))) +
-        noise;
+    BOOST_OUTCOME_TRY(auto amplitude, ConstantKernel::create({1.0 / group_count, 1e-5, 100.0}));
+    BOOST_OUTCOME_TRY(auto isotropic, RBF::create({0.7, 0.1, 20.0}));
+    BOOST_OUTCOME_TRY(auto independent, make_additive_kernel(groups, amplitude * isotropic));
+    BOOST_OUTCOME_TRY(auto shared_amplitude,
+                      ConstantKernel::create({1.0 / group_count, 1e-5 / group_count, 100.0 / group_count}));
+    BOOST_OUTCOME_TRY(auto ard, RBF::create(std::vector<Parameter>(4, {0.7, 0.1, 20.0})));
+    BOOST_OUTCOME_TRY(auto shared, make_shared_additive_kernel(groups, shared_amplitude * ard));
+    const auto independent_kernel = independent + noise;
+    const auto shared_kernel = shared + noise;
     for (auto count : counts) {
-        evaluate("independent", seed, data, count, independent, training_checksum, test_checksum, function,
-                 diagnostic);
-        evaluate("shared_ard", seed, data, count, shared, training_checksum, test_checksum, function,
-                 diagnostic);
+        BOOST_OUTCOME_TRY(evaluate("independent", seed, data, count, independent_kernel,
+                                   training_checksum, test_checksum, function, diagnostic));
+        BOOST_OUTCOME_TRY(evaluate("shared_ard", seed, data, count, shared_kernel,
+                                   training_checksum, test_checksum, function, diagnostic));
     }
+    return boost::outcome_v2::success();
 }
-void run(std::uint64_t seed, bool quick, bool plain_matern, bool suite, const FunctionCase &function) {
+
+ExperimentResult<void> run(std::uint64_t seed, bool quick, bool plain_matern, bool suite, const FunctionCase &function) {
     const Eigen::Index dimension = quick ? 20 : 80;
     const Eigen::Index test_count = quick ? 128 : 2048;
     auto counts =
@@ -212,11 +221,14 @@ void run(std::uint64_t seed, bool quick, bool plain_matern, bool suite, const Fu
     }
     const auto max_count = counts.back();
     const auto data = nested_dataset(dimension, max_count, test_count, seed, function);
-    evaluate_models(seed, data, counts, plain_matern, suite, function.name);
+    return evaluate_models(seed, data, counts, plain_matern, suite, function.name);
 }
 
-void read_observations(std::istream &source, Eigen::Index count, Eigen::Index dimension, Matrix &x,
+ExperimentResult<void> read_observations(std::istream &source, Eigen::Index count, Eigen::Index dimension, Matrix &x,
                        Vector &y) {
+    if (count < 0 || dimension <= 0) {
+        return boost::outcome_v2::failure(ExperimentError("Invalid BBOB observation dimensions"));
+    }
     x.resize(count, dimension);
     y.resize(count);
     for (Eigen::Index row = 0; row < count; ++row) {
@@ -225,15 +237,18 @@ void read_observations(std::istream &source, Eigen::Index count, Eigen::Index di
         }
         source >> y[row];
     }
+    if (!source) {
+        return boost::outcome_v2::failure(ExperimentError("Cannot read BBOB observations"));
+    }
+    return boost::outcome_v2::success();
 }
 
-void run_bbob(const Options &options) {
+ExperimentResult<void> run_bbob(const Options &options) {
     std::ifstream manifest(options.bbob_directory + "/cases.txt");
-    manifest.exceptions(std::ios::badbit);
     std::uint64_t seed = 0;
     Diagnostic diagnostic;
     if (!(manifest >> seed >> diagnostic.instance)) {
-        throw std::runtime_error("Cannot read BBOB manifest");
+        return boost::outcome_v2::failure(ExperimentError("Cannot read BBOB manifest"));
     }
     const auto counts =
         options.quick ? std::vector<Eigen::Index>{32, 64} : std::vector<Eigen::Index>{128, 256, 512};
@@ -241,47 +256,46 @@ void run_bbob(const Options &options) {
     std::string file;
     while (manifest >> function >> file) {
         std::ifstream source(options.bbob_directory + "/" + file);
-        source.exceptions(std::ios::failbit | std::ios::badbit);
         Eigen::Index dimension = 0;
         Eigen::Index training = 0;
         Eigen::Index testing = 0;
         Eigen::Index local = 0;
-        source >> dimension >> training >> testing >> local;
-        Dataset data;
-        read_observations(source, training, dimension, data.train_x, data.train_y);
-        read_observations(source, testing, dimension, data.test_x, data.test_y);
-        read_observations(source, local, dimension, diagnostic.x, diagnostic.y);
-        if (counts.back() > training) {
-            throw std::runtime_error("BBOB dataset has too few training observations");
+        if (!(source >> dimension >> training >> testing >> local) ||
+            dimension <= 0 || dimension % 4 != 0 || training < counts.back() || testing <= 0 || local < 0) {
+            return boost::outcome_v2::failure(ExperimentError("Invalid BBOB case header or too few observations"));
         }
+        Dataset data;
+        BOOST_OUTCOME_TRY(read_observations(source, training, dimension, data.train_x, data.train_y));
+        BOOST_OUTCOME_TRY(read_observations(source, testing, dimension, data.test_x, data.test_y));
+        BOOST_OUTCOME_TRY(read_observations(source, local, dimension, diagnostic.x, diagnostic.y));
         std::cerr << "Function=" << function << " instance=" << diagnostic.instance << '\n';
-        evaluate_models(seed, data, counts, false, true, function, diagnostic);
+        BOOST_OUTCOME_TRY(evaluate_models(seed, data, counts, false, true, function, diagnostic));
     }
+    return boost::outcome_v2::success();
 }
-} // namespace
-
-int main(int argc, char **argv) try {
+ExperimentResult<void> run_main(int argc, char **argv) {
     Eigen::setNbThreads(1);
-    const auto options = parse_options(argc, argv);
+    BOOST_OUTCOME_TRY(auto options, parse_options(argc, argv));
     std::cout << std::setprecision(12)
               << "dimension,train_count,test_count,seed,model,parameters,rmse,nrmse,r2,mae,p95_absolute_"
                  "error,max_absolute_error,train_rmse,noise_std,fit_seconds,predict_seconds,iterations,"
                  "evaluations,converged,lml,training_pool_checksum,test_checksum,physical_parameters,"
                  "function,instance,local_rmse,local_nrmse,local_r2,constant_local_nrmse,local_checksum\n";
     if (!options.bbob_directory.empty()) {
-        run_bbob(options);
-        return 0;
+        return run_bbob(options);
     }
     const auto functions =
         options.suite ? function_suite() : std::vector<FunctionCase>{{"original", additive_target}};
     for (auto seed : options.seeds) {
         for (const auto &function : functions) {
             std::cerr << "Function=" << function.name << '\n';
-            run(seed, options.quick, options.plain_matern, options.suite, function);
+            BOOST_OUTCOME_TRY(run(seed, options.quick, options.plain_matern, options.suite, function));
         }
     }
-    return 0;
-} catch (const std::exception &error) {
-    std::cerr << error.what() << '\n';
-    return 1;
+    return boost::outcome_v2::success();
+}
+} // namespace
+
+int main(int argc, char **argv) {
+    return super_gpr_experiments::report_experiment(run_main(argc, argv));
 }

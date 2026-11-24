@@ -1,10 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <boost/outcome/try.hpp>
+#include <cassert>
 #include <cmath>
 #include <limits>
 #include <memory>
-#include <stdexcept>
 #include <super_gpr/types.hpp>
 #include <type_traits>
 #include <utility>
@@ -23,18 +24,6 @@ struct Parameter {
 // Fixed parameters are omitted from theta, bounds, and hyperparameter gradients.
 class ParameterSet {
 public:
-    explicit ParameterSet(std::vector<Parameter> parameters) : parameters_(std::move(parameters)) {
-        for (const auto &parameter : parameters_) {
-            if (parameter.lower != parameter.upper &&
-                (!(parameter.value > 0.0) || !(parameter.lower > 0.0) || parameter.lower > parameter.upper)) {
-                throw std::invalid_argument("Kernel parameters and bounds must be positive and ordered");
-            }
-            if (parameter.lower != parameter.upper) {
-                ++size_;
-            }
-        }
-    }
-
     Eigen::Index parameter_count() const { return size_; }
 
     Vector theta() const {
@@ -60,9 +49,9 @@ public:
         return result;
     }
 
-    void set_theta(Point theta) {
+    GPRResult<void> set_theta(Point theta) {
         if (theta.size() != size_) {
-            throw std::invalid_argument("Wrong theta size");
+            return boost::outcome_v2::failure(GPRError::InvalidThetaSize);
         }
         Eigen::Index index = 0;
         for (auto &parameter : parameters_) {
@@ -70,9 +59,28 @@ public:
                 parameter.value = std::exp(theta[index++]);
             }
         }
+        return boost::outcome_v2::success();
     }
 
 protected:
+    explicit ParameterSet(std::vector<Parameter> parameters) : parameters_(std::move(parameters)) {
+        for (const auto &parameter : parameters_) {
+            if (parameter.lower != parameter.upper) {
+                ++size_;
+            }
+        }
+    }
+
+    template <class K> static GPRResult<K> checked_parameters(K kernel) {
+        for (const auto &parameter : kernel.parameters_) {
+            if (parameter.lower != parameter.upper &&
+                (!(parameter.value > 0.0) || !(parameter.lower > 0.0) || parameter.lower > parameter.upper)) {
+                return boost::outcome_v2::failure(GPRError::InvalidKernelParameters);
+            }
+        }
+        return kernel;
+    }
+
     double parameter(std::size_t index) const { return parameters_[index].value; }
     std::size_t stored_parameter_count() const { return parameters_.size(); }
     void write_gradient(std::size_t index, double value, Gradient gradient, Eigen::Index &offset) const {
@@ -90,77 +98,151 @@ template <class...> using Void = void;
 template <class K, class = void> struct IsKernel : std::false_type {};
 template <class K>
 struct IsKernel<
-    K, Void<decltype(std::declval<const K &>().value(std::declval<Point>(), std::declval<Point>(), true)),
-            decltype(std::declval<const K &>().gradient(std::declval<Point>(), std::declval<Point>(), true,
+    K, Void<decltype(std::declval<const K &>().value_unchecked(std::declval<Point>(), std::declval<Point>(), true)),
+            decltype(std::declval<const K &>().gradient_unchecked(std::declval<Point>(), std::declval<Point>(), true,
                                                         std::declval<Gradient>())),
-            decltype(std::declval<const K &>().input_gradient(std::declval<Point>(), std::declval<Point>(),
+            decltype(std::declval<const K &>().input_gradient_unchecked(std::declval<Point>(), std::declval<Point>(),
                                                               std::declval<Gradient>())),
-            decltype(std::declval<const K &>().diagonal_gradient(std::declval<Point>(),
+            decltype(std::declval<const K &>().diagonal_gradient_unchecked(std::declval<Point>(),
                                                                  std::declval<Gradient>())),
             decltype(std::declval<const K &>().theta()), decltype(std::declval<const K &>().bounds()),
             decltype(std::declval<const K &>().parameter_count()),
-            decltype(std::declval<K &>().set_theta(std::declval<Point>()))>> : std::true_type {};
+            decltype(std::declval<K &>().set_theta(std::declval<Point>()))>>
+    : std::is_same<decltype(std::declval<K &>().set_theta(std::declval<Point>())), GPRResult<void>> {};
 
 namespace detail {
 
-class InvalidKernelInput : public std::invalid_argument {
-public:
-    using std::invalid_argument::invalid_argument;
-};
+template <class K>
+auto validate_kernel_input(const K &kernel, Eigen::Index dimensions, int)
+    -> decltype(kernel.validate_input(dimensions)) {
+    return kernel.validate_input(dimensions);
+}
+
+template <class K>
+GPRResult<void> validate_kernel_input(const K &, Eigen::Index, long) {
+    return boost::outcome_v2::success();
+}
 
 // Opt in library kernels by exact type so user subclasses with custom value or
 // gradient methods continue to use their original interface.
 template <class K> struct ValueGradient {
     static double evaluate(const K &kernel, Point x, Point y, bool same, Gradient out) {
-        kernel.gradient(x, y, same, out);
-        return kernel.value(x, y, same);
+        kernel.gradient_unchecked(x, y, same, out);
+        return kernel.value_unchecked(x, y, same);
     }
 };
 
 template <class K> struct FusedValueGradient {
     static double evaluate(const K &kernel, Point x, Point y, bool same, Gradient out) {
-        return kernel.value_and_gradient(x, y, same, out);
+        return kernel.value_and_gradient_unchecked(x, y, same, out);
+    }
+};
+
+// Public point evaluations validate once. Training and prediction use the
+// unchecked kernel interface after validating the shape of the entire batch.
+template <class K> class CheckedKernelEvaluation {
+public:
+    GPRResult<double> value(Point x, Point y, bool same) const {
+        BOOST_OUTCOME_TRY(validate_points(x, y));
+        return kernel().value_unchecked(x, y, same);
+    }
+    GPRResult<void> gradient(Point x, Point y, bool same, Gradient out) const {
+        BOOST_OUTCOME_TRY(validate_gradient(x, y, out.size()));
+        kernel().gradient_unchecked(x, y, same, out);
+        return boost::outcome_v2::success();
+    }
+    GPRResult<double> value_and_gradient(Point x, Point y, bool same, Gradient out) const {
+        BOOST_OUTCOME_TRY(validate_gradient(x, y, out.size()));
+        return ValueGradient<K>::evaluate(kernel(), x, y, same, out);
+    }
+    GPRResult<void> input_gradient(Point x, Point y, Gradient out) const {
+        if (out.size() != x.size()) {
+            return boost::outcome_v2::failure(GPRError::InvalidKernelInput);
+        }
+        BOOST_OUTCOME_TRY(validate_points(x, y));
+        kernel().input_gradient_unchecked(x, y, out);
+        return boost::outcome_v2::success();
+    }
+    GPRResult<void> diagonal_gradient(Point x, Gradient out) const {
+        if (out.size() != x.size()) {
+            return boost::outcome_v2::failure(GPRError::InvalidKernelInput);
+        }
+        BOOST_OUTCOME_TRY(validate_kernel_input(kernel(), x.size(), 0));
+        kernel().diagonal_gradient_unchecked(x, out);
+        return boost::outcome_v2::success();
+    }
+
+private:
+    const K &kernel() const { return static_cast<const K &>(*this); }
+    GPRResult<void> validate_points(Point x, Point y) const {
+        if (x.size() != y.size()) {
+            return boost::outcome_v2::failure(GPRError::InvalidKernelInput);
+        }
+        return validate_kernel_input(kernel(), x.size(), 0);
+    }
+    GPRResult<void> validate_gradient(Point x, Point y, Eigen::Index size) const {
+        if (size != kernel().parameter_count()) {
+            return boost::outcome_v2::failure(GPRError::InvalidKernelInput);
+        }
+        return validate_points(x, y);
     }
 };
 
 } // namespace detail
 
-class ConstantKernel : public ParameterSet {
+class ConstantKernel : public ParameterSet, public detail::CheckedKernelEvaluation<ConstantKernel> {
 public:
-    explicit ConstantKernel(Parameter constant = {}) : ParameterSet({constant}) {}
-    double value(Point /*x*/, Point /*y*/, bool /*same*/) const { return parameter(0); }
-    void gradient(Point /*x*/, Point /*y*/, bool /*same*/, Gradient out) const {
+    ConstantKernel() : ConstantKernel(Parameter{}) {}
+    static ConstantKernel fixed(double value) { return ConstantKernel(Parameter::fixed(value)); }
+    static GPRResult<ConstantKernel> create(Parameter constant) {
+        return checked_parameters(ConstantKernel(constant));
+    }
+    double value_unchecked(Point /*x*/, Point /*y*/, bool /*same*/) const { return parameter(0); }
+    void gradient_unchecked(Point /*x*/, Point /*y*/, bool /*same*/, Gradient out) const {
         Eigen::Index offset = 0;
         write_gradient(0, parameter(0), out, offset);
     }
-    static void input_gradient(Point /*x*/, Point /*y*/, Gradient out) { out.setZero(); }
-    static void diagonal_gradient(Point /*x*/, Gradient out) { out.setZero(); }
+    static void input_gradient_unchecked(Point /*x*/, Point /*y*/, Gradient out) { out.setZero(); }
+    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out) { out.setZero(); }
+
+private:
+    explicit ConstantKernel(Parameter constant) : ParameterSet({constant}) {}
 };
 
-class WhiteKernel : public ParameterSet {
+class WhiteKernel : public ParameterSet, public detail::CheckedKernelEvaluation<WhiteKernel> {
 public:
-    explicit WhiteKernel(Parameter noise = {}) : ParameterSet({noise}) {}
-    double value(Point /*x*/, Point /*y*/, bool same) const { return same ? parameter(0) : 0.0; }
-    void gradient(Point x, Point y, bool same, Gradient out) const {
-        Eigen::Index offset = 0;
-        write_gradient(0, value(x, y, same), out, offset);
+    WhiteKernel() : WhiteKernel(Parameter{}) {}
+    static GPRResult<WhiteKernel> create(Parameter noise) {
+        return checked_parameters(WhiteKernel(noise));
     }
-    static void input_gradient(Point /*x*/, Point /*y*/, Gradient out) { out.setZero(); }
-    static void diagonal_gradient(Point /*x*/, Gradient out) { out.setZero(); }
+    double value_unchecked(Point /*x*/, Point /*y*/, bool same) const { return same ? parameter(0) : 0.0; }
+    void gradient_unchecked(Point x, Point y, bool same, Gradient out) const {
+        Eigen::Index offset = 0;
+        write_gradient(0, value_unchecked(x, y, same), out, offset);
+    }
+    static void input_gradient_unchecked(Point /*x*/, Point /*y*/, Gradient out) { out.setZero(); }
+    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out) { out.setZero(); }
+
+private:
+    explicit WhiteKernel(Parameter noise) : ParameterSet({noise}) {}
 };
 
 // A single length scale is isotropic; multiple scales enable ARD.
 class RadialKernel : public ParameterSet {
 public:
-    explicit RadialKernel(Parameter scale) : ParameterSet({scale}) {}
-    explicit RadialKernel(std::vector<Parameter> scales) : ParameterSet(std::move(scales)) {
-        if (stored_parameter_count() == 0) {
-            throw std::invalid_argument("Length scales cannot be empty");
+    GPRResult<void> validate_input(Eigen::Index dimensions) const {
+        if (stored_parameter_count() != 1 &&
+            stored_parameter_count() != static_cast<std::size_t>(dimensions)) {
+            return boost::outcome_v2::failure(GPRError::InvalidKernelInput);
         }
+        return boost::outcome_v2::success();
     }
-    static void diagonal_gradient(Point /*x*/, Gradient out) { out.setZero(); }
+    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out) { out.setZero(); }
 
 protected:
+    explicit RadialKernel(Parameter scale) : ParameterSet({scale}) {}
+    explicit RadialKernel(std::vector<Parameter> scales) : ParameterSet(std::move(scales)) {}
+
     double scale(Eigen::Index axis) const {
         return parameter(stored_parameter_count() == 1 ? 0 : static_cast<std::size_t>(axis));
     }
@@ -168,7 +250,7 @@ protected:
         if (stored_parameter_count() == 1) {
             return ((x - y) / parameter(0)).squaredNorm();
         }
-        check_ard_dimension(x.size());
+        assert(stored_parameter_count() == static_cast<std::size_t>(x.size()));
         double result = 0.0;
         for (Eigen::Index axis = 0; axis < x.size(); ++axis) {
             const double delta = (x[axis] - y[axis]) / parameter(static_cast<std::size_t>(axis));
@@ -183,7 +265,7 @@ protected:
             write_gradient(0, distance, out, offset);
             return distance;
         }
-        check_ard_dimension(x.size());
+        assert(stored_parameter_count() == static_cast<std::size_t>(x.size()));
         double distance = 0.0;
         for (Eigen::Index axis = 0; axis < x.size(); ++axis) {
             const auto index = static_cast<std::size_t>(axis);
@@ -203,60 +285,73 @@ protected:
             out[axis] = -factor * (x[axis] - y[axis]) / (scale(axis) * scale(axis));
         }
     }
-
-private:
-    void check_ard_dimension(Eigen::Index dimension) const {
-        if (stored_parameter_count() != static_cast<std::size_t>(dimension)) {
-            throw detail::InvalidKernelInput("ARD length scales must match the feature count");
-        }
-    }
 };
 
-class RBF : public RadialKernel {
+class RBF : public RadialKernel, public detail::CheckedKernelEvaluation<RBF> {
 public:
-    explicit RBF(Parameter scale = {}) : RadialKernel(scale) {}
-    explicit RBF(std::vector<Parameter> scales) : RadialKernel(std::move(scales)) {}
-    double value(Point x, Point y, bool /*same*/) const { return std::exp(-0.5 * squared_distance(x, y)); }
-    void gradient(Point x, Point y, bool same, Gradient out) const {
-        value_and_gradient(x, y, same, out);
+    RBF() : RBF(Parameter{}) {}
+    static GPRResult<RBF> create(Parameter scale) { return checked_parameters(RBF(scale)); }
+    static GPRResult<RBF> create(std::vector<Parameter> scales) {
+        if (scales.empty()) {
+            return boost::outcome_v2::failure(GPRError::InvalidKernelParameters);
+        }
+        return checked_parameters(RBF(std::move(scales)));
     }
-    double value_and_gradient(Point x, Point y, bool /*same*/, Gradient out) const {
+    double value_unchecked(Point x, Point y, bool /*same*/) const { return std::exp(-0.5 * squared_distance(x, y)); }
+    void gradient_unchecked(Point x, Point y, bool same, Gradient out) const {
+        value_and_gradient_unchecked(x, y, same, out);
+    }
+    double value_and_gradient_unchecked(Point x, Point y, bool /*same*/, Gradient out) const {
         const double kernel_value = std::exp(-0.5 * squared_distance_and_gradient(x, y, out));
         out *= kernel_value;
         return kernel_value;
     }
-    void input_gradient(Point x, Point y, Gradient out) const {
-        radial_input_gradient(x, y, value(x, y, false), out);
+    void input_gradient_unchecked(Point x, Point y, Gradient out) const {
+        radial_input_gradient(x, y, value_unchecked(x, y, false), out);
     }
+private:
+    explicit RBF(Parameter scale) : RadialKernel(scale) {}
+    explicit RBF(std::vector<Parameter> scales) : RadialKernel(std::move(scales)) {}
 };
 
-class Matern : public RadialKernel {
+class Matern : public RadialKernel, public detail::CheckedKernelEvaluation<Matern> {
 public:
-    explicit Matern(Parameter scale = {}, double nu = 1.5) : RadialKernel(scale), nu_(nu) { check_nu(); }
-    explicit Matern(std::vector<Parameter> scales, double nu = 1.5)
-        : RadialKernel(std::move(scales)), nu_(nu) {
-        check_nu();
+    Matern() : Matern(Parameter{}, 1.5) {}
+    static GPRResult<Matern> create(Parameter scale, double nu = 1.5) {
+        BOOST_OUTCOME_TRY(check_nu(nu));
+        return checked_parameters(Matern(scale, nu));
     }
-    double value(Point x, Point y, bool /*same*/) const {
+    static GPRResult<Matern> create(std::vector<Parameter> scales, double nu = 1.5) {
+        BOOST_OUTCOME_TRY(check_nu(nu));
+        if (scales.empty()) {
+            return boost::outcome_v2::failure(GPRError::InvalidKernelParameters);
+        }
+        return checked_parameters(Matern(std::move(scales), nu));
+    }
+    double value_unchecked(Point x, Point y, bool /*same*/) const {
         return radial_value(std::sqrt(squared_distance(x, y))).value;
     }
-    void gradient(Point x, Point y, bool same, Gradient out) const {
-        value_and_gradient(x, y, same, out);
+    void gradient_unchecked(Point x, Point y, bool same, Gradient out) const {
+        value_and_gradient_unchecked(x, y, same, out);
     }
-    double value_and_gradient(Point x, Point y, bool /*same*/, Gradient out) const {
+    double value_and_gradient_unchecked(Point x, Point y, bool /*same*/, Gradient out) const {
         const auto radial = radial_value(std::sqrt(squared_distance_and_gradient(x, y, out)));
         out *= radial.gradient_factor;
         return radial.value;
     }
-    void input_gradient(Point x, Point y, Gradient out) const {
+    void input_gradient_unchecked(Point x, Point y, Gradient out) const {
         radial_input_gradient(x, y, radial_value(std::sqrt(squared_distance(x, y))).gradient_factor, out);
     }
 
 private:
-    void check_nu() const {
-        if (nu_ != 0.5 && nu_ != 1.5 && nu_ != 2.5 && nu_ != std::numeric_limits<double>::infinity()) {
-            throw std::invalid_argument("Matern supports nu = 0.5, 1.5, 2.5, or infinity");
+    Matern(Parameter scale, double nu) : RadialKernel(scale), nu_(nu) {}
+    Matern(std::vector<Parameter> scales, double nu) : RadialKernel(std::move(scales)), nu_(nu) {}
+
+    static GPRResult<void> check_nu(double nu) {
+        if (nu != 0.5 && nu != 1.5 && nu != 2.5 && nu != std::numeric_limits<double>::infinity()) {
+            return boost::outcome_v2::failure(GPRError::InvalidMaternNu);
         }
+        return boost::outcome_v2::success();
     }
     struct RadialValue {
         double value;
@@ -289,70 +384,85 @@ template <> struct ValueGradient<RBF> : FusedValueGradient<RBF> {};
 template <> struct ValueGradient<Matern> : FusedValueGradient<Matern> {};
 } // namespace detail
 
-class RationalQuadratic : public ParameterSet {
+class RationalQuadratic : public ParameterSet, public detail::CheckedKernelEvaluation<RationalQuadratic> {
 public:
-    explicit RationalQuadratic(Parameter scale = {}, Parameter alpha = {}) : ParameterSet({alpha, scale}) {}
-    double value(Point x, Point y, bool /*same*/) const { return std::pow(base(x, y), -parameter(0)); }
-    void gradient(Point x, Point y, bool same, Gradient out) const {
+    RationalQuadratic() : RationalQuadratic(Parameter{}, Parameter{}) {}
+    static GPRResult<RationalQuadratic> create(Parameter scale, Parameter alpha = {}) {
+        return checked_parameters(RationalQuadratic(scale, alpha));
+    }
+    double value_unchecked(Point x, Point y, bool /*same*/) const { return std::pow(base(x, y), -parameter(0)); }
+    void gradient_unchecked(Point x, Point y, bool same, Gradient out) const {
         const double b = base(x, y);
-        const double k = value(x, y, same);
+        const double k = value_unchecked(x, y, same);
         Eigen::Index offset = 0;
         write_gradient(0, k * parameter(0) * (-std::log(b) + (b - 1.0) / b), out, offset);
         write_gradient(1, k * (x - y).squaredNorm() / (parameter(1) * parameter(1) * b), out, offset);
     }
-    void input_gradient(Point x, Point y, Gradient out) const {
-        out = -(x - y) * (value(x, y, false) / (parameter(1) * parameter(1) * base(x, y)));
+    void input_gradient_unchecked(Point x, Point y, Gradient out) const {
+        out = -(x - y) * (value_unchecked(x, y, false) / (parameter(1) * parameter(1) * base(x, y)));
     }
-    static void diagonal_gradient(Point /*x*/, Gradient out) { out.setZero(); }
+    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out) { out.setZero(); }
 
 private:
+    RationalQuadratic(Parameter scale, Parameter alpha) : ParameterSet({alpha, scale}) {}
+
     double base(Point x, Point y) const {
         return 1.0 + (x - y).squaredNorm() / (2.0 * parameter(0) * parameter(1) * parameter(1));
     }
 };
 
-class ExpSineSquared : public ParameterSet {
+class ExpSineSquared : public ParameterSet, public detail::CheckedKernelEvaluation<ExpSineSquared> {
 public:
-    explicit ExpSineSquared(Parameter scale = {}, Parameter periodicity = {})
-        : ParameterSet({scale, periodicity}) {}
-    double value(Point x, Point y, bool /*same*/) const {
+    ExpSineSquared() : ExpSineSquared(Parameter{}, Parameter{}) {}
+    static GPRResult<ExpSineSquared> create(Parameter scale, Parameter periodicity = {}) {
+        return checked_parameters(ExpSineSquared(scale, periodicity));
+    }
+    double value_unchecked(Point x, Point y, bool /*same*/) const {
         const double sine = std::sin(angle(x, y));
         return std::exp(-2.0 * sine * sine / (parameter(0) * parameter(0)));
     }
-    void gradient(Point x, Point y, bool same, Gradient out) const {
+    void gradient_unchecked(Point x, Point y, bool same, Gradient out) const {
         const double a = angle(x, y);
-        const double factor = 4.0 * value(x, y, same) / (parameter(0) * parameter(0));
+        const double factor = 4.0 * value_unchecked(x, y, same) / (parameter(0) * parameter(0));
         Eigen::Index offset = 0;
         write_gradient(0, factor * std::sin(a) * std::sin(a), out, offset);
         write_gradient(1, factor * a * std::sin(a) * std::cos(a), out, offset);
     }
-    void input_gradient(Point x, Point y, Gradient out) const {
+    void input_gradient_unchecked(Point x, Point y, Gradient out) const {
         const double distance = (x - y).norm();
         if (distance == 0.0) {
             out.setZero();
             return;
         }
         const double a = angle(x, y);
-        out = (x - y) * (-4.0 * value(x, y, false) * std::sin(a) * std::cos(a) * pi() /
+        out = (x - y) * (-4.0 * value_unchecked(x, y, false) * std::sin(a) * std::cos(a) * pi() /
                          (parameter(0) * parameter(0) * parameter(1) * distance));
     }
-    static void diagonal_gradient(Point /*x*/, Gradient out) { out.setZero(); }
+    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out) { out.setZero(); }
 
 private:
+    ExpSineSquared(Parameter scale, Parameter periodicity) : ParameterSet({scale, periodicity}) {}
+
     static double pi() { return std::acos(-1.0); }
     double angle(Point x, Point y) const { return pi() * (x - y).norm() / parameter(1); }
 };
 
-class DotProduct : public ParameterSet {
+class DotProduct : public ParameterSet, public detail::CheckedKernelEvaluation<DotProduct> {
 public:
-    explicit DotProduct(Parameter sigma = {}) : ParameterSet({sigma}) {}
-    double value(Point x, Point y, bool /*same*/) const { return x.dot(y) + parameter(0) * parameter(0); }
-    void gradient(Point /*x*/, Point /*y*/, bool /*same*/, Gradient out) const {
+    DotProduct() : DotProduct(Parameter{}) {}
+    static GPRResult<DotProduct> create(Parameter sigma) {
+        return checked_parameters(DotProduct(sigma));
+    }
+    double value_unchecked(Point x, Point y, bool /*same*/) const { return x.dot(y) + parameter(0) * parameter(0); }
+    void gradient_unchecked(Point /*x*/, Point /*y*/, bool /*same*/, Gradient out) const {
         Eigen::Index offset = 0;
         write_gradient(0, 2.0 * parameter(0) * parameter(0), out, offset);
     }
-    static void input_gradient(Point /*x*/, Point y, Gradient out) { out = y; }
-    static void diagonal_gradient(Point x, Gradient out) { out = 2.0 * x; }
+    static void input_gradient_unchecked(Point /*x*/, Point y, Gradient out) { out = y; }
+    static void diagonal_gradient_unchecked(Point x, Gradient out) { out = 2.0 * x; }
+
+private:
+    explicit DotProduct(Parameter sigma) : ParameterSet({sigma}) {}
 };
 
 struct AddOperation {
@@ -365,7 +475,8 @@ struct MultiplyOperation {
     static double left_factor(double /*left*/, double right) { return right; }
     static double right_factor(double left, double /*right*/) { return left; }
 };
-template <class K1, class K2, class Operation> class BinaryKernel {
+template <class K1, class K2, class Operation> class BinaryKernel
+    : public detail::CheckedKernelEvaluation<BinaryKernel<K1, K2, Operation>> {
     static_assert(IsKernel<K1>::value && IsKernel<K2>::value, "Operands must satisfy the Kernel interface");
 
 public:
@@ -386,20 +497,24 @@ public:
         out.upper << left.upper, right.upper;
         return out;
     }
-    void set_theta(Point theta) {
+    GPRResult<void> set_theta(Point theta) {
         if (theta.size() != parameter_count()) {
-            throw std::invalid_argument("Wrong theta size");
+            return boost::outcome_v2::failure(GPRError::InvalidThetaSize);
         }
-        left_.set_theta(theta.head(left_.parameter_count()));
-        right_.set_theta(theta.tail(right_.parameter_count()));
+        BOOST_OUTCOME_TRY(left_.set_theta(theta.head(left_.parameter_count())));
+        return right_.set_theta(theta.tail(right_.parameter_count()));
     }
-    double value(Point x, Point y, bool same) const {
-        return Operation::apply(left_.value(x, y, same), right_.value(x, y, same));
+    GPRResult<void> validate_input(Eigen::Index dimensions) const {
+        BOOST_OUTCOME_TRY(detail::validate_kernel_input(left_, dimensions, 0));
+        return detail::validate_kernel_input(right_, dimensions, 0);
     }
-    void gradient(Point x, Point y, bool same, Gradient out) const {
+    double value_unchecked(Point x, Point y, bool same) const {
+        return Operation::apply(left_.value_unchecked(x, y, same), right_.value_unchecked(x, y, same));
+    }
+    void gradient_unchecked(Point x, Point y, bool same, Gradient out) const {
         gradient_impl(x, y, same, out, std::is_same<Operation, AddOperation>{});
     }
-    double value_and_gradient(Point x, Point y, bool same, Gradient out) const {
+    double value_and_gradient_unchecked(Point x, Point y, bool same, Gradient out) const {
         auto left = out.head(left_.parameter_count());
         auto right = out.tail(right_.parameter_count());
         const double a = detail::ValueGradient<K1>::evaluate(left_, x, y, same, left);
@@ -408,13 +523,13 @@ public:
         right *= Operation::right_factor(a, b);
         return Operation::apply(a, b);
     }
-    void input_gradient(Point x, Point y, Gradient out) const {
+    void input_gradient_unchecked(Point x, Point y, Gradient out) const {
         spatial_gradient(x, y, false, out,
-                         [&](const auto &kernel, Gradient target) { kernel.input_gradient(x, y, target); });
+                         [&](const auto &kernel, Gradient target) { kernel.input_gradient_unchecked(x, y, target); });
     }
-    void diagonal_gradient(Point x, Gradient out) const {
+    void diagonal_gradient_unchecked(Point x, Gradient out) const {
         spatial_gradient(x, x, true, out,
-                         [&](const auto &kernel, Gradient target) { kernel.diagonal_gradient(x, target); });
+                         [&](const auto &kernel, Gradient target) { kernel.diagonal_gradient_unchecked(x, target); });
     }
 
 private:
@@ -429,14 +544,14 @@ private:
         if ((is_sum || is_product) && left_constant) {
             derivative(right_, out);
             if (is_product) {
-                out *= left_.value(x, y, same);
+                out *= left_.value_unchecked(x, y, same);
             }
             return;
         }
         derivative(left_, out);
         if ((is_sum || is_product) && right_constant) {
             if (is_product) {
-                out *= right_.value(x, y, same);
+                out *= right_.value_unchecked(x, y, same);
             }
             return;
         }
@@ -446,17 +561,17 @@ private:
             out += scratch;
             return;
         }
-        const double a = left_.value(x, y, same);
-        const double b = right_.value(x, y, same);
+        const double a = left_.value_unchecked(x, y, same);
+        const double b = right_.value_unchecked(x, y, same);
         out = Operation::left_factor(a, b) * out + Operation::right_factor(a, b) * scratch;
     }
 
     void gradient_impl(Point x, Point y, bool same, Gradient out, std::true_type) const {
-        left_.gradient(x, y, same, out.head(left_.parameter_count()));
-        right_.gradient(x, y, same, out.tail(right_.parameter_count()));
+        left_.gradient_unchecked(x, y, same, out.head(left_.parameter_count()));
+        right_.gradient_unchecked(x, y, same, out.tail(right_.parameter_count()));
     }
     void gradient_impl(Point x, Point y, bool same, Gradient out, std::false_type) const {
-        value_and_gradient(x, y, same, out);
+        value_and_gradient_unchecked(x, y, same, out);
     }
 
     K1 left_;
@@ -478,6 +593,8 @@ template <class K1, class K2> using Add = AddKernel<K1, K2>;
 template <class K1, class K2> using Multiply = Multiple<K1, K2>;
 
 namespace detail {
+template <class K1, class K2, class Operation> struct ValueGradient<BinaryKernel<K1, K2, Operation>>
+    : FusedValueGradient<BinaryKernel<K1, K2, Operation>> {};
 template <class K1, class K2> struct ValueGradient<AddKernel<K1, K2>>
     : FusedValueGradient<AddKernel<K1, K2>> {};
 template <class K1, class K2> struct ValueGradient<Multiple<K1, K2>>
@@ -496,14 +613,14 @@ Multiple<K1, K2> operator*(K1 left, K2 right) {
 // Scalar factors are fixed ConstantKernels and introduce no optimization parameters.
 template <class K, std::enable_if_t<IsKernel<K>::value, int> = 0>
 Multiple<ConstantKernel, K> operator*(double factor, K kernel) {
-    return {ConstantKernel(Parameter::fixed(factor)), std::move(kernel)};
+    return {ConstantKernel::fixed(factor), std::move(kernel)};
 }
 template <class K, std::enable_if_t<IsKernel<K>::value, int> = 0>
 Multiple<K, ConstantKernel> operator*(K kernel, double factor) {
-    return {std::move(kernel), ConstantKernel(Parameter::fixed(factor))};
+    return {std::move(kernel), ConstantKernel::fixed(factor)};
 }
 
-class BoxedKernel {
+class BoxedKernel : public detail::CheckedKernelEvaluation<BoxedKernel> {
     struct Interface {
         Interface() = default;
         Interface(const Interface &) = default;
@@ -515,11 +632,12 @@ class BoxedKernel {
         virtual Eigen::Index parameter_count() const = 0;
         virtual Vector theta() const = 0;
         virtual Bounds bounds() const = 0;
-        virtual void set_theta(Point theta) = 0;
-        virtual double value(Point x, Point y, bool same) const = 0;
-        virtual void gradient(Point x, Point y, bool same, Gradient out) const = 0;
-        virtual void input_gradient(Point x, Point y, Gradient out) const = 0;
-        virtual void diagonal_gradient(Point x, Gradient out) const = 0;
+        virtual GPRResult<void> set_theta(Point theta) = 0;
+        virtual GPRResult<void> validate_input(Eigen::Index dimensions) const = 0;
+        virtual double value_unchecked(Point x, Point y, bool same) const = 0;
+        virtual void gradient_unchecked(Point x, Point y, bool same, Gradient out) const = 0;
+        virtual void input_gradient_unchecked(Point x, Point y, Gradient out) const = 0;
+        virtual void diagonal_gradient_unchecked(Point x, Gradient out) const = 0;
     };
     template <class K> struct Model final : Interface {
         explicit Model(K kernel) : kernel(std::move(kernel)) {}
@@ -527,15 +645,18 @@ class BoxedKernel {
         Eigen::Index parameter_count() const override { return kernel.parameter_count(); }
         Vector theta() const override { return kernel.theta(); }
         Bounds bounds() const override { return kernel.bounds(); }
-        void set_theta(Point theta) override { kernel.set_theta(theta); }
-        double value(Point x, Point y, bool same) const override { return kernel.value(x, y, same); }
-        void gradient(Point x, Point y, bool same, Gradient out) const override {
-            kernel.gradient(x, y, same, out);
+        GPRResult<void> set_theta(Point theta) override { return kernel.set_theta(theta); }
+        GPRResult<void> validate_input(Eigen::Index dimensions) const override {
+            return detail::validate_kernel_input(kernel, dimensions, 0);
         }
-        void input_gradient(Point x, Point y, Gradient out) const override {
-            kernel.input_gradient(x, y, out);
+        double value_unchecked(Point x, Point y, bool same) const override { return kernel.value_unchecked(x, y, same); }
+        void gradient_unchecked(Point x, Point y, bool same, Gradient out) const override {
+            kernel.gradient_unchecked(x, y, same, out);
         }
-        void diagonal_gradient(Point x, Gradient out) const override { kernel.diagonal_gradient(x, out); }
+        void input_gradient_unchecked(Point x, Point y, Gradient out) const override {
+            kernel.input_gradient_unchecked(x, y, out);
+        }
+        void diagonal_gradient_unchecked(Point x, Gradient out) const override { kernel.diagonal_gradient_unchecked(x, out); }
         K kernel;
     };
 
@@ -555,11 +676,14 @@ public:
     Eigen::Index parameter_count() const { return kernel_->parameter_count(); }
     Vector theta() const { return kernel_->theta(); }
     Bounds bounds() const { return kernel_->bounds(); }
-    void set_theta(Point theta) { kernel_->set_theta(theta); }
-    double value(Point x, Point y, bool same) const { return kernel_->value(x, y, same); }
-    void gradient(Point x, Point y, bool same, Gradient out) const { kernel_->gradient(x, y, same, out); }
-    void input_gradient(Point x, Point y, Gradient out) const { kernel_->input_gradient(x, y, out); }
-    void diagonal_gradient(Point x, Gradient out) const { kernel_->diagonal_gradient(x, out); }
+    GPRResult<void> set_theta(Point theta) { return kernel_->set_theta(theta); }
+    GPRResult<void> validate_input(Eigen::Index dimensions) const {
+        return kernel_->validate_input(dimensions);
+    }
+    double value_unchecked(Point x, Point y, bool same) const { return kernel_->value_unchecked(x, y, same); }
+    void gradient_unchecked(Point x, Point y, bool same, Gradient out) const { kernel_->gradient_unchecked(x, y, same, out); }
+    void input_gradient_unchecked(Point x, Point y, Gradient out) const { kernel_->input_gradient_unchecked(x, y, out); }
+    void diagonal_gradient_unchecked(Point x, Gradient out) const { kernel_->diagonal_gradient_unchecked(x, out); }
 
 private:
     std::unique_ptr<Interface> kernel_;
@@ -567,7 +691,8 @@ private:
 
 // User callbacks receive theta in log coordinates. All derivatives are supplied analytically.
 template <class Value, class HyperGradient, class InputGradient, class DiagonalGradient>
-class AnalyticKernel {
+class AnalyticKernel
+    : public detail::CheckedKernelEvaluation<AnalyticKernel<Value, HyperGradient, InputGradient, DiagonalGradient>> {
 public:
     AnalyticKernel(Vector theta, Bounds bounds, Value value, HyperGradient hyper, InputGradient input,
                    DiagonalGradient diagonal)
@@ -576,11 +701,17 @@ public:
     Eigen::Index parameter_count() const { return theta_.size(); }
     Vector theta() const { return theta_; }
     Bounds bounds() const { return bounds_; }
-    void set_theta(Point theta) { theta_ = theta; }
-    double value(Point x, Point y, bool same) const { return value_(x, y, same, theta_); }
-    void gradient(Point x, Point y, bool same, Gradient out) const { hyper_(x, y, same, theta_, out); }
-    void input_gradient(Point x, Point y, Gradient out) const { input_(x, y, theta_, out); }
-    void diagonal_gradient(Point x, Gradient out) const { diagonal_(x, theta_, out); }
+    GPRResult<void> set_theta(Point theta) {
+        if (theta.size() != theta_.size()) {
+            return boost::outcome_v2::failure(GPRError::InvalidThetaSize);
+        }
+        theta_ = theta;
+        return boost::outcome_v2::success();
+    }
+    double value_unchecked(Point x, Point y, bool same) const { return value_(x, y, same, theta_); }
+    void gradient_unchecked(Point x, Point y, bool same, Gradient out) const { hyper_(x, y, same, theta_, out); }
+    void input_gradient_unchecked(Point x, Point y, Gradient out) const { input_(x, y, theta_, out); }
+    void diagonal_gradient_unchecked(Point x, Gradient out) const { diagonal_(x, theta_, out); }
 
 private:
     Vector theta_;
@@ -598,12 +729,13 @@ AnalyticKernel<V, H, I, D> make_analytic_kernel(Vector theta, Bounds bounds, V v
             std::move(hyper), std::move(input),  std::move(diagonal)};
 }
 
-template <class K> Matrix covariance(const K &kernel, const Matrix &x) {
-    static_assert(IsKernel<K>::value, "K must satisfy the Kernel interface");
+namespace detail {
+
+template <class K> Matrix covariance_unchecked(const K &kernel, const Matrix &x) {
     Matrix result(x.rows(), x.rows());
     for (Eigen::Index row = 0; row < x.rows(); ++row) {
         for (Eigen::Index col = 0; col <= row; ++col) {
-            const double value = kernel.value(x.row(row).transpose(), x.row(col).transpose(), row == col);
+            const double value = kernel.value_unchecked(x.row(row).transpose(), x.row(col).transpose(), row == col);
             result(row, col) = value;
             // NOLINTNEXTLINE(readability-suspicious-call-argument) -- Symmetric entry.
             result(col, row) = value;
@@ -612,17 +744,30 @@ template <class K> Matrix covariance(const K &kernel, const Matrix &x) {
     return result;
 }
 
-template <class K> Matrix covariance(const K &kernel, const Matrix &x, const Matrix &y) {
-    if (x.cols() != y.cols()) {
-        throw std::invalid_argument("Cross covariance requires matching feature counts");
-    }
+template <class K> Matrix covariance_unchecked(const K &kernel, const Matrix &x, const Matrix &y) {
     Matrix result(x.rows(), y.rows());
     for (Eigen::Index row = 0; row < x.rows(); ++row) {
         for (Eigen::Index col = 0; col < y.rows(); ++col) {
-            result(row, col) = kernel.value(x.row(row).transpose(), y.row(col).transpose(), false);
+            result(row, col) = kernel.value_unchecked(x.row(row).transpose(), y.row(col).transpose(), false);
         }
     }
     return result;
+}
+
+} // namespace detail
+
+template <class K> GPRResult<Matrix> covariance(const K &kernel, const Matrix &x) {
+    static_assert(IsKernel<K>::value, "K must satisfy the Kernel interface");
+    BOOST_OUTCOME_TRY(detail::validate_kernel_input(kernel, x.cols(), 0));
+    return detail::covariance_unchecked(kernel, x);
+}
+
+template <class K> GPRResult<Matrix> covariance(const K &kernel, const Matrix &x, const Matrix &y) {
+    if (x.cols() != y.cols()) {
+        return boost::outcome_v2::failure(GPRError::InvalidPredictionShape);
+    }
+    BOOST_OUTCOME_TRY(detail::validate_kernel_input(kernel, x.cols(), 0));
+    return detail::covariance_unchecked(kernel, x, y);
 }
 
 } // namespace super_gpr
