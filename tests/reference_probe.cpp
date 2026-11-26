@@ -28,10 +28,10 @@ Matrix query_x() {
     x << 0.2, -0.1, 0.8, 0.4, 2.0, 0.2;
     return x;
 }
-void report_kernel(const std::string &name, const BoxedKernel &kernel) {
-    const Matrix x = training_x();
+void report_kernel(const std::string &name, const BoxedKernel &kernel, Eigen::Index dimensions) {
+    const Matrix x = training_x().leftCols(dimensions);
     emit(name + ".train", covariance(kernel, x).value());
-    emit(name + ".cross", covariance(kernel, x, query_x()).value());
+    emit(name + ".cross", covariance(kernel, x, query_x().leftCols(dimensions)).value());
     emit(name + ".theta", kernel.theta());
     Matrix derivatives(x.rows() * x.rows(), kernel.parameter_count());
     Vector gradient(kernel.parameter_count());
@@ -74,11 +74,11 @@ int main() try {
         {"dot", BoxedKernel(DotProduct::create({0.6}).value())},
         {"constant", BoxedKernel(ConstantKernel::create({1.2}).value())},
         {"white", BoxedKernel(WhiteKernel::create({0.2}).value())},
-        {"composite", BoxedKernel(1.7 * (RBF{} + DotProduct{}) * (ConstantKernel{} + WhiteKernel{}))},
+        {"composite", BoxedKernel((1.7 * (RBF{} + DotProduct{})).value() * (ConstantKernel{} + WhiteKernel{}))},
         {"fixed", BoxedKernel(ConstantKernel::create(Parameter::fixed(2.0)).value() *
                               RBF::create(std::vector<Parameter>{Parameter::fixed(0.7), {1.3}}).value())}};
     for (const auto &entry : kernels) {
-        report_kernel(entry.first, entry.second);
+        report_kernel(entry.first, entry.second, entry.first == "periodic" ? 1 : 2);
     }
     Matrix targets(6, 1);
     targets << 1.2, 0.7, -0.1, -0.8, -0.3, 0.4;

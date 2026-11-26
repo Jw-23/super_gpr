@@ -168,7 +168,7 @@ ExperimentResult<Fit> fit(const Candidate &candidate, const Observations &traini
     if (candidate.quadratic) {
         const double dimension_scale = static_cast<double>(training.x.cols()) / 3.0;
         BOOST_OUTCOME_TRY(auto linear, DotProduct::create(Parameter::fixed(std::sqrt(dimension_scale))));
-        const auto dot = (1.0 / dimension_scale) * linear;
+        BOOST_OUTCOME_TRY(auto dot, (1.0 / dimension_scale) * linear);
         const auto kernel = stationary + amplitude * dot * dot + noise;
         return fit_kernel(kernel, training, query, warp, candidate.multistart);
     }

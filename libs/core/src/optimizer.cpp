@@ -26,9 +26,13 @@ std::vector<Eigen::Index> active_coordinates(const Bounds &bounds) {
 
 LBFGSBResult minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
                              const LBFGSBOptions &options) {
-    if (bounds.lower.size() != initial.size() || bounds.upper.size() != initial.size() ||
-        (bounds.lower.array() > bounds.upper.array()).any()) {
+    if (!detail::valid_optimizer_bounds(bounds, initial.size())) {
         return boost::outcome_v2::failure(OptimizationError::InvalidBounds);
+    }
+    if (options.memory <= 0 || options.max_iterations < 0 || options.max_line_search <= 0 ||
+        !std::isfinite(options.gradient_tolerance) || options.gradient_tolerance < 0.0 ||
+        !std::isfinite(options.function_tolerance) || options.function_tolerance < 0.0) {
+        return boost::outcome_v2::failure(OptimizationError::InvalidOptions);
     }
     initial = initial.cwiseMax(bounds.lower).cwiseMin(bounds.upper);
     const auto invoke = [&](const Vector &point, Vector &gradient) -> ObjectiveResult {
@@ -108,8 +112,6 @@ LBFGSBResult minimize_lbfgsb(const Objective &objective, Vector initial, const B
     try {
         LBFGSpp::LBFGSBSolver<double> solver(parameters);
         result.iterations = solver.minimize(evaluate, reduced, value, lower, upper);
-    } catch (const std::invalid_argument &) {
-        return boost::outcome_v2::failure(callback_failed ? callback_error : OptimizationError::InvalidOptions);
     } catch (const std::logic_error &) {
         line_search_failed = true;
     } catch (const std::runtime_error &) {
@@ -166,8 +168,8 @@ GPRResult<void> Cholesky::compute(Eigen::MatrixXd matrix) {
     assert(matrix.rows() > 0 && matrix.rows() == matrix.cols());
     const lapack_int n = lapack_size(matrix.rows());
     const lapack_int status = LAPACKE_dpotrf(LAPACK_COL_MAJOR, 'L', n, matrix.data(), n);
-    // A nonpositive pivot or NaN (-4 from LAPACKE) invalidates the factor.
-    if (status != 0) {
+    // LAPACKE may report success with infinite diagonal entries.
+    if (status != 0 || !matrix.diagonal().allFinite()) {
         factor_.resize(0, 0);
         return boost::outcome_v2::failure(GPRError::NonPositiveDefiniteCovariance);
     }

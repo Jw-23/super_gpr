@@ -174,6 +174,15 @@ struct Suggestion {
 
 namespace detail {
 
+inline GPRResult<AcquisitionValue> evaluate_acquisition(const AcquisitionFunction &acquisition,
+                                                        double mean, double deviation) {
+    try {
+        return acquisition.evaluate(mean, deviation);
+    } catch (...) {
+        return boost::outcome_v2::failure(GPRError::CallbackFailed);
+    }
+}
+
 inline GPRResult<std::vector<Eigen::Index>> sorted_exclusions(const SuggestOptions &options,
                                                             Eigen::Index candidate_count) {
     auto excluded = options.excluded_indices;
@@ -205,7 +214,7 @@ GPRResult<Suggestion> suggest_discrete(const GaussianProcessRegressor<K> &model,
     auto next_exclusion = excluded.begin();
     Eigen::Index remaining = candidate_count - static_cast<Eigen::Index>(excluded.size());
     if (remaining == 0) {
-        return Suggestion{};
+        return boost::outcome_v2::failure(GPRError::NoAcquisitionCandidates);
     }
 
     Matrix batch(std::min(remaining, options.batch_size), dimensions);
@@ -227,12 +236,13 @@ GPRResult<Suggestion> suggest_discrete(const GaussianProcessRegressor<K> &model,
             ++candidate;
         }
 
-        BOOST_OUTCOME_TRY(auto prediction, model.predict(batch));
+        BOOST_OUTCOME_TRY(auto prediction, model.predict(batch, false, PredictionTarget::Latent));
         for (Eigen::Index row = 0; row < batch.rows(); ++row) {
-            const double value =
-                acquisition.evaluate(prediction.mean(row, 0), prediction.standard_deviation(row, 0)).value;
+            BOOST_OUTCOME_TRY(auto score, evaluate_acquisition(
+                acquisition, prediction.mean(row, 0), prediction.standard_deviation(row, 0)));
+            const double value = score.value;
             if (!std::isfinite(value)) {
-                return boost::outcome_v2::failure(GPRError::NonFiniteAcquisition);
+                continue;
             }
             if (!best || (maximize ? value > best.value : value < best.value)) {
                 best.x = batch.row(row).transpose();
@@ -241,6 +251,9 @@ GPRResult<Suggestion> suggest_discrete(const GaussianProcessRegressor<K> &model,
             }
         }
         remaining -= batch.rows();
+    }
+    if (!best) {
+        return boost::outcome_v2::failure(GPRError::NonFiniteAcquisition);
     }
     return best;
 }
@@ -280,16 +293,34 @@ GPRResult<OptimizationResult> optimize_acquisition(const GaussianProcessRegresso
                                                    const AcquisitionFunction &acquisition,
                                                    const Matrix &starts, const Bounds &bounds,
                                                    const LBFGSBOptions &options) {
-    if (starts.rows() == 0) {
-        return boost::outcome_v2::failure(GPRError::NoAcquisitionStarts);
+    if (!starts.allFinite()) {
+        return boost::outcome_v2::failure(GPRError::NonFiniteCandidates);
     }
     BOOST_OUTCOME_TRY(model.validate_point_prediction(starts.cols()));
+    if (starts.rows() == 0) {
+        return boost::outcome_v2::failure(GPRError::NoAcquisitionCandidates);
+    }
     const double sign = acquisition.maximize() ? -1.0 : 1.0;
+    GPRError callback_error = GPRError::CallbackFailed;
     auto objective = [&](const Vector &point, Vector &gradient) -> ObjectiveResult {
-        const auto posterior = model.posterior_with_gradients(point);
-        const auto value = acquisition.evaluate(posterior.mean, posterior.standard_deviation);
-        gradient = sign * (value.mean_derivative * posterior.mean_gradient +
-                           value.deviation_derivative * posterior.standard_deviation_gradient);
+        const auto posterior = model.posterior_with_gradients(point, PredictionTarget::Latent);
+        if (!posterior) {
+            callback_error = posterior.error();
+            return boost::outcome_v2::failure(OptimizationError::CallbackFailed);
+        }
+        const auto &prediction = posterior.value();
+        const auto score = detail::evaluate_acquisition(acquisition, prediction.mean, prediction.standard_deviation);
+        if (!score) {
+            callback_error = score.error();
+            return boost::outcome_v2::failure(OptimizationError::CallbackFailed);
+        }
+        const auto &value = score.value();
+        gradient = sign * (value.mean_derivative * prediction.mean_gradient +
+                           value.deviation_derivative * prediction.standard_deviation_gradient);
+        if (!std::isfinite(value.value) || !gradient.allFinite()) {
+            gradient.setZero();
+            return std::numeric_limits<double>::infinity();
+        }
         return sign * value.value;
     };
     OptimizationResult best;
@@ -297,12 +328,22 @@ GPRResult<OptimizationResult> optimize_acquisition(const GaussianProcessRegresso
     for (Eigen::Index row = 0; row < starts.rows(); ++row) {
         auto outcome = minimize_lbfgsb(objective, starts.row(row).transpose(), bounds, options);
         if (!outcome) {
-            return boost::outcome_v2::failure(detail::optimizer_error(outcome.error()));
+            switch (outcome.error()) {
+            case OptimizationError::NoFiniteObjective:
+                continue;
+            case OptimizationError::CallbackFailed:
+                return boost::outcome_v2::failure(callback_error);
+            default:
+                return boost::outcome_v2::failure(detail::optimizer_error(outcome.error()));
+            }
         }
         auto &result = outcome.value();
         if (result.value < best.value) {
             best = std::move(result);
         }
+    }
+    if (!std::isfinite(best.value)) {
+        return boost::outcome_v2::failure(GPRError::NonFiniteAcquisition);
     }
     best.value *= sign;
     best.gradient *= sign;

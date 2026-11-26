@@ -8,6 +8,7 @@
 #include <memory>
 #include <super_gpr/types.hpp>
 #include <type_traits>
+#include <typeinfo>
 #include <utility>
 #include <vector>
 
@@ -53,6 +54,12 @@ public:
         if (theta.size() != size_) {
             return boost::outcome_v2::failure(GPRError::InvalidThetaSize);
         }
+        // Validate before mutating, including exp overflow and underflow.
+        const double min_theta = std::log(std::numeric_limits<double>::denorm_min());
+        const double max_theta = std::log(std::numeric_limits<double>::max());
+        if (!((theta.array() >= min_theta) && (theta.array() <= max_theta)).all()) {
+            return boost::outcome_v2::failure(GPRError::InvalidTheta);
+        }
         Eigen::Index index = 0;
         for (auto &parameter : parameters_) {
             if (parameter.lower != parameter.upper) {
@@ -71,10 +78,14 @@ protected:
         }
     }
 
-    template <class K> static GPRResult<K> checked_parameters(K kernel) {
+    template <class K> static GPRResult<K> checked_parameters(K kernel, bool allow_fixed_zero = false) {
         for (const auto &parameter : kernel.parameters_) {
-            if (parameter.lower != parameter.upper &&
-                (!(parameter.value > 0.0) || !(parameter.lower > 0.0) || parameter.lower > parameter.upper)) {
+            const bool fixed = parameter.lower == parameter.upper;
+            const bool valid_value = std::isfinite(parameter.value) &&
+                (parameter.value > 0.0 || (fixed && allow_fixed_zero && parameter.value == 0.0));
+            const bool valid_bounds = fixed ? parameter.value == parameter.lower
+                : parameter.lower > 0.0 && std::isfinite(parameter.lower) && parameter.lower <= parameter.upper;
+            if (!valid_value || !valid_bounds) {
                 return boost::outcome_v2::failure(GPRError::InvalidKernelParameters);
             }
         }
@@ -112,6 +123,13 @@ struct IsKernel<
 
 namespace detail {
 
+inline bool valid_optimizer_bounds(const Bounds &bounds, Eigen::Index size) {
+    const double infinity = std::numeric_limits<double>::infinity();
+    return bounds.lower.size() == size && bounds.upper.size() == size &&
+           (bounds.lower.array() <= bounds.upper.array()).all() &&
+           (bounds.lower.array() < infinity).all() && (bounds.upper.array() > -infinity).all();
+}
+
 template <class K>
 auto validate_kernel_input(const K &kernel, Eigen::Index dimensions, int)
     -> decltype(kernel.validate_input(dimensions)) {
@@ -121,6 +139,52 @@ auto validate_kernel_input(const K &kernel, Eigen::Index dimensions, int)
 template <class K>
 GPRResult<void> validate_kernel_input(const K &, Eigen::Index, long) {
     return boost::outcome_v2::success();
+}
+
+// same=false selects the latent diagonal. Smooth kernels can use the
+// same derivative for either target.
+template <class K>
+auto kernel_diagonal_gradient(const K &kernel, Point x, Gradient out, bool same, int)
+    -> decltype(kernel.diagonal_gradient_unchecked(x, out, same)) {
+    kernel.diagonal_gradient_unchecked(x, out, same);
+}
+
+template <class K>
+void kernel_diagonal_gradient(const K &kernel, Point x, Gradient out, bool same, long) {
+    if (same) {
+        kernel.diagonal_gradient_unchecked(x, out);
+    } else {
+        // By symmetry, both arguments contribute the same derivative on the diagonal.
+        kernel.input_gradient_unchecked(x, x, out);
+        out *= 2.0;
+    }
+}
+
+struct KernelIdentity {
+    const void *address;
+    const std::type_info &type;
+
+    template <class K> explicit KernelIdentity(const K &kernel)
+        : address(std::addressof(kernel)), type(typeid(K)) {}
+
+    bool operator==(const KernelIdentity &other) const {
+        return address == other.address && type == other.type;
+    }
+};
+
+template <class K>
+auto has_additive_component(const K &kernel, KernelIdentity component, int)
+    -> decltype(kernel.has_additive_component(component)) {
+    return kernel.has_additive_component(component);
+}
+
+template <class K>
+bool has_additive_component(const K &, KernelIdentity, long) {
+    return false;
+}
+
+template <class K> bool contains_component(const K &kernel, KernelIdentity component) {
+    return KernelIdentity(kernel) == component || has_additive_component(kernel, component, 0);
 }
 
 // Opt in library kernels by exact type so user subclasses with custom value or
@@ -193,9 +257,9 @@ private:
 class ConstantKernel : public ParameterSet, public detail::CheckedKernelEvaluation<ConstantKernel> {
 public:
     ConstantKernel() : ConstantKernel(Parameter{}) {}
-    static ConstantKernel fixed(double value) { return ConstantKernel(Parameter::fixed(value)); }
+    static GPRResult<ConstantKernel> fixed(double value) { return create(Parameter::fixed(value)); }
     static GPRResult<ConstantKernel> create(Parameter constant) {
-        return checked_parameters(ConstantKernel(constant));
+        return checked_parameters(ConstantKernel(constant), true);
     }
     double value_unchecked(Point /*x*/, Point /*y*/, bool /*same*/) const { return parameter(0); }
     void gradient_unchecked(Point /*x*/, Point /*y*/, bool /*same*/, Gradient out) const {
@@ -203,7 +267,7 @@ public:
         write_gradient(0, parameter(0), out, offset);
     }
     static void input_gradient_unchecked(Point /*x*/, Point /*y*/, Gradient out) { out.setZero(); }
-    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out) { out.setZero(); }
+    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out, bool /*same*/ = true) { out.setZero(); }
 
 private:
     explicit ConstantKernel(Parameter constant) : ParameterSet({constant}) {}
@@ -213,7 +277,7 @@ class WhiteKernel : public ParameterSet, public detail::CheckedKernelEvaluation<
 public:
     WhiteKernel() : WhiteKernel(Parameter{}) {}
     static GPRResult<WhiteKernel> create(Parameter noise) {
-        return checked_parameters(WhiteKernel(noise));
+        return checked_parameters(WhiteKernel(noise), true);
     }
     double value_unchecked(Point /*x*/, Point /*y*/, bool same) const { return same ? parameter(0) : 0.0; }
     void gradient_unchecked(Point x, Point y, bool same, Gradient out) const {
@@ -221,7 +285,7 @@ public:
         write_gradient(0, value_unchecked(x, y, same), out, offset);
     }
     static void input_gradient_unchecked(Point /*x*/, Point /*y*/, Gradient out) { out.setZero(); }
-    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out) { out.setZero(); }
+    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out, bool /*same*/ = true) { out.setZero(); }
 
 private:
     explicit WhiteKernel(Parameter noise) : ParameterSet({noise}) {}
@@ -237,7 +301,7 @@ public:
         }
         return boost::outcome_v2::success();
     }
-    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out) { out.setZero(); }
+    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out, bool /*same*/ = true) { out.setZero(); }
 
 protected:
     explicit RadialKernel(Parameter scale) : ParameterSet({scale}) {}
@@ -401,7 +465,7 @@ public:
     void input_gradient_unchecked(Point x, Point y, Gradient out) const {
         out = -(x - y) * (value_unchecked(x, y, false) / (parameter(1) * parameter(1) * base(x, y)));
     }
-    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out) { out.setZero(); }
+    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out, bool /*same*/ = true) { out.setZero(); }
 
 private:
     RationalQuadratic(Parameter scale, Parameter alpha) : ParameterSet({alpha, scale}) {}
@@ -416,6 +480,12 @@ public:
     ExpSineSquared() : ExpSineSquared(Parameter{}, Parameter{}) {}
     static GPRResult<ExpSineSquared> create(Parameter scale, Parameter periodicity = {}) {
         return checked_parameters(ExpSineSquared(scale, periodicity));
+    }
+    GPRResult<void> validate_input(Eigen::Index dimensions) const {
+        if (dimensions != 1) {
+            return boost::outcome_v2::failure(GPRError::InvalidKernelInput);
+        }
+        return boost::outcome_v2::success();
     }
     double value_unchecked(Point x, Point y, bool /*same*/) const {
         const double sine = std::sin(angle(x, y));
@@ -438,7 +508,7 @@ public:
         out = (x - y) * (-4.0 * value_unchecked(x, y, false) * std::sin(a) * std::cos(a) * pi() /
                          (parameter(0) * parameter(0) * parameter(1) * distance));
     }
-    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out) { out.setZero(); }
+    static void diagonal_gradient_unchecked(Point /*x*/, Gradient out, bool /*same*/ = true) { out.setZero(); }
 
 private:
     ExpSineSquared(Parameter scale, Parameter periodicity) : ParameterSet({scale, periodicity}) {}
@@ -451,7 +521,7 @@ class DotProduct : public ParameterSet, public detail::CheckedKernelEvaluation<D
 public:
     DotProduct() : DotProduct(Parameter{}) {}
     static GPRResult<DotProduct> create(Parameter sigma) {
-        return checked_parameters(DotProduct(sigma));
+        return checked_parameters(DotProduct(sigma), true);
     }
     double value_unchecked(Point x, Point y, bool /*same*/) const { return x.dot(y) + parameter(0) * parameter(0); }
     void gradient_unchecked(Point /*x*/, Point /*y*/, bool /*same*/, Gradient out) const {
@@ -459,7 +529,7 @@ public:
         write_gradient(0, 2.0 * parameter(0) * parameter(0), out, offset);
     }
     static void input_gradient_unchecked(Point /*x*/, Point y, Gradient out) { out = y; }
-    static void diagonal_gradient_unchecked(Point x, Gradient out) { out = 2.0 * x; }
+    static void diagonal_gradient_unchecked(Point x, Gradient out, bool /*same*/ = true) { out = 2.0 * x; }
 
 private:
     explicit DotProduct(Parameter sigma) : ParameterSet({sigma}) {}
@@ -527,9 +597,10 @@ public:
         spatial_gradient(x, y, false, out,
                          [&](const auto &kernel, Gradient target) { kernel.input_gradient_unchecked(x, y, target); });
     }
-    void diagonal_gradient_unchecked(Point x, Gradient out) const {
-        spatial_gradient(x, x, true, out,
-                         [&](const auto &kernel, Gradient target) { kernel.diagonal_gradient_unchecked(x, target); });
+    void diagonal_gradient_unchecked(Point x, Gradient out, bool same = true) const {
+        spatial_gradient(x, x, same, out, [&](const auto &kernel, Gradient target) {
+            detail::kernel_diagonal_gradient(kernel, x, target, same, 0);
+        });
     }
 
 private:
@@ -581,6 +652,11 @@ private:
 template <class K1, class K2> class AddKernel final : public BinaryKernel<K1, K2, AddOperation> {
 public:
     AddKernel(K1 left, K2 right) : BinaryKernel<K1, K2, AddOperation>(std::move(left), std::move(right)) {}
+
+    bool has_additive_component(detail::KernelIdentity component) const {
+        return detail::contains_component(this->left(), component) ||
+               detail::contains_component(this->right(), component);
+    }
 };
 
 template <class K1, class K2> class Multiple final : public BinaryKernel<K1, K2, MultiplyOperation> {
@@ -612,12 +688,14 @@ Multiple<K1, K2> operator*(K1 left, K2 right) {
 
 // Scalar factors are fixed ConstantKernels and introduce no optimization parameters.
 template <class K, std::enable_if_t<IsKernel<K>::value, int> = 0>
-Multiple<ConstantKernel, K> operator*(double factor, K kernel) {
-    return {ConstantKernel::fixed(factor), std::move(kernel)};
+GPRResult<Multiple<ConstantKernel, K>> operator*(double factor, K kernel) {
+    BOOST_OUTCOME_TRY(auto constant, ConstantKernel::fixed(factor));
+    return std::move(constant) * std::move(kernel);
 }
 template <class K, std::enable_if_t<IsKernel<K>::value, int> = 0>
-Multiple<K, ConstantKernel> operator*(K kernel, double factor) {
-    return {std::move(kernel), ConstantKernel::fixed(factor)};
+GPRResult<Multiple<K, ConstantKernel>> operator*(K kernel, double factor) {
+    BOOST_OUTCOME_TRY(auto constant, ConstantKernel::fixed(factor));
+    return std::move(kernel) * std::move(constant);
 }
 
 class BoxedKernel : public detail::CheckedKernelEvaluation<BoxedKernel> {
@@ -637,7 +715,7 @@ class BoxedKernel : public detail::CheckedKernelEvaluation<BoxedKernel> {
         virtual double value_unchecked(Point x, Point y, bool same) const = 0;
         virtual void gradient_unchecked(Point x, Point y, bool same, Gradient out) const = 0;
         virtual void input_gradient_unchecked(Point x, Point y, Gradient out) const = 0;
-        virtual void diagonal_gradient_unchecked(Point x, Gradient out) const = 0;
+        virtual void diagonal_gradient_unchecked(Point x, Gradient out, bool same) const = 0;
     };
     template <class K> struct Model final : Interface {
         explicit Model(K kernel) : kernel(std::move(kernel)) {}
@@ -656,7 +734,9 @@ class BoxedKernel : public detail::CheckedKernelEvaluation<BoxedKernel> {
         void input_gradient_unchecked(Point x, Point y, Gradient out) const override {
             kernel.input_gradient_unchecked(x, y, out);
         }
-        void diagonal_gradient_unchecked(Point x, Gradient out) const override { kernel.diagonal_gradient_unchecked(x, out); }
+        void diagonal_gradient_unchecked(Point x, Gradient out, bool same) const override {
+            detail::kernel_diagonal_gradient(kernel, x, out, same, 0);
+        }
         K kernel;
     };
 
@@ -683,7 +763,9 @@ public:
     double value_unchecked(Point x, Point y, bool same) const { return kernel_->value_unchecked(x, y, same); }
     void gradient_unchecked(Point x, Point y, bool same, Gradient out) const { kernel_->gradient_unchecked(x, y, same, out); }
     void input_gradient_unchecked(Point x, Point y, Gradient out) const { kernel_->input_gradient_unchecked(x, y, out); }
-    void diagonal_gradient_unchecked(Point x, Gradient out) const { kernel_->diagonal_gradient_unchecked(x, out); }
+    void diagonal_gradient_unchecked(Point x, Gradient out, bool same = true) const {
+        kernel_->diagonal_gradient_unchecked(x, out, same);
+    }
 
 private:
     std::unique_ptr<Interface> kernel_;
@@ -694,16 +776,26 @@ template <class Value, class HyperGradient, class InputGradient, class DiagonalG
 class AnalyticKernel
     : public detail::CheckedKernelEvaluation<AnalyticKernel<Value, HyperGradient, InputGradient, DiagonalGradient>> {
 public:
-    AnalyticKernel(Vector theta, Bounds bounds, Value value, HyperGradient hyper, InputGradient input,
-                   DiagonalGradient diagonal)
-        : theta_(std::move(theta)), bounds_(std::move(bounds)), value_(std::move(value)),
-          hyper_(std::move(hyper)), input_(std::move(input)), diagonal_(std::move(diagonal)) {}
+    static GPRResult<AnalyticKernel> create(Vector theta, Bounds bounds, Value value, HyperGradient hyper,
+                                           InputGradient input, DiagonalGradient diagonal) {
+        if (!detail::valid_optimizer_bounds(bounds, theta.size())) {
+            return boost::outcome_v2::failure(GPRError::InvalidOptimizerBounds);
+        }
+        if (!theta.allFinite()) {
+            return boost::outcome_v2::failure(GPRError::InvalidTheta);
+        }
+        return AnalyticKernel(std::move(theta), std::move(bounds), std::move(value), std::move(hyper),
+                              std::move(input), std::move(diagonal));
+    }
     Eigen::Index parameter_count() const { return theta_.size(); }
     Vector theta() const { return theta_; }
     Bounds bounds() const { return bounds_; }
     GPRResult<void> set_theta(Point theta) {
         if (theta.size() != theta_.size()) {
             return boost::outcome_v2::failure(GPRError::InvalidThetaSize);
+        }
+        if (!theta.allFinite()) {
+            return boost::outcome_v2::failure(GPRError::InvalidTheta);
         }
         theta_ = theta;
         return boost::outcome_v2::success();
@@ -714,6 +806,11 @@ public:
     void diagonal_gradient_unchecked(Point x, Gradient out) const { diagonal_(x, theta_, out); }
 
 private:
+    AnalyticKernel(Vector theta, Bounds bounds, Value value, HyperGradient hyper, InputGradient input,
+                   DiagonalGradient diagonal)
+        : theta_(std::move(theta)), bounds_(std::move(bounds)), value_(std::move(value)),
+          hyper_(std::move(hyper)), input_(std::move(input)), diagonal_(std::move(diagonal)) {}
+
     Vector theta_;
     Bounds bounds_;
     Value value_;
@@ -723,19 +820,19 @@ private:
 };
 
 template <class V, class H, class I, class D>
-AnalyticKernel<V, H, I, D> make_analytic_kernel(Vector theta, Bounds bounds, V value, H hyper, I input,
-                                                D diagonal) {
-    return {std::move(theta), std::move(bounds), std::move(value),
-            std::move(hyper), std::move(input),  std::move(diagonal)};
+GPRResult<AnalyticKernel<V, H, I, D>> make_analytic_kernel(Vector theta, Bounds bounds, V value, H hyper,
+                                                          I input, D diagonal) {
+    return AnalyticKernel<V, H, I, D>::create(std::move(theta), std::move(bounds), std::move(value),
+                                              std::move(hyper), std::move(input), std::move(diagonal));
 }
 
 namespace detail {
 
-template <class K> Matrix covariance_unchecked(const K &kernel, const Matrix &x) {
+template <class K> Matrix covariance_unchecked(const K &kernel, const Matrix &x, bool same = true) {
     Matrix result(x.rows(), x.rows());
     for (Eigen::Index row = 0; row < x.rows(); ++row) {
         for (Eigen::Index col = 0; col <= row; ++col) {
-            const double value = kernel.value_unchecked(x.row(row).transpose(), x.row(col).transpose(), row == col);
+            const double value = kernel.value_unchecked(x.row(row).transpose(), x.row(col).transpose(), same && row == col);
             result(row, col) = value;
             // NOLINTNEXTLINE(readability-suspicious-call-argument) -- Symmetric entry.
             result(col, row) = value;

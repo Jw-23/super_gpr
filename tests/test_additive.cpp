@@ -83,8 +83,8 @@ TEST(AdditiveKernel, FixedParametersAndInvalidGroups) {
 TEST(AdditiveGP, SharedObservationInfersComponentsAndTheirPosteriorDependence) {
     using Component = SubspaceKernel<ConstantKernel>;
     auto kernel = AdditiveKernel<ConstantKernel>::create(
-        std::vector<Component>{Component::create(ConstantKernel::fixed(4.0), {0}).value(),
-                               Component::create(ConstantKernel::fixed(1.0), {1}).value()}).value();
+        std::vector<Component>{Component::create(ConstantKernel::fixed(4.0).value(), {0}).value(),
+                               Component::create(ConstantKernel::fixed(1.0).value(), {1}).value()}).value();
     GPROptions options;
     options.alpha = 0.0;
     options.optimize = false;
@@ -131,6 +131,26 @@ TEST(AdditiveGP, ComponentsReconstructNormalizedMultiOutputMeanAndCovariance) {
                                   noise.covariance[output] + cross[output] + cross[output].transpose();
         EXPECT_TRUE(total.covariance[output].isApprox(covariance, 1e-10));
     }
+}
+
+TEST(AdditiveGP, ComponentQueriesRequireDistinctFittedAdditiveTerms) {
+    const auto periodic = SubspaceKernel<ExpSineSquared>::create(ExpSineSquared{}, {0}).value();
+    const auto kernel = (periodic + RBF{}) + WhiteKernel{};
+    GPROptions options;
+    options.optimize = false;
+    GaussianProcessRegressor<decltype(kernel)> model(kernel, options);
+    const Matrix x = Matrix::Zero(1, 2);
+    const Vector y = Vector::Ones(1);
+    ASSERT_TRUE(model.fit(x, y));
+    const auto &sum = model.kernel().left();
+    const auto &term = sum.left();
+    const auto copy = term;
+    EXPECT_TRUE(model.predict_component(term, x));
+    EXPECT_TRUE(model.component_cross_covariance(term, model.kernel().right(), x));
+    EXPECT_EQ(model.predict_component(copy, x).error(), GPRError::InvalidKernelComponent);
+    EXPECT_EQ(model.component_cross_covariance(term, copy, x).error(), GPRError::InvalidKernelComponent);
+    EXPECT_EQ(model.component_cross_covariance(term, term, x).error(), GPRError::DependentKernelComponents);
+    EXPECT_EQ(model.component_cross_covariance(term, sum, x).error(), GPRError::DependentKernelComponents);
 }
 
 TEST(AdditiveGP, BatchedTrainingMatchesPairwiseKernelsWithOverlappingGroups) {

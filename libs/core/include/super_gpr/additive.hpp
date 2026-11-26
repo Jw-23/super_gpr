@@ -59,16 +59,16 @@ public:
             scatter(local, out);
         }
     }
-    void diagonal_gradient_unchecked(Point x, Gradient out) const {
+    void diagonal_gradient_unchecked(Point x, Gradient out, bool same = true) const {
         assert(last_feature_ < x.size());
         out.setZero();
         if (contiguous_) {
-            kernel_.diagonal_gradient_unchecked(contiguous_point(x),
-                                      out.segment(features_.front(), dimension()));
+            detail::kernel_diagonal_gradient(kernel_, contiguous_point(x),
+                                             out.segment(features_.front(), dimension()), same, 0);
         } else {
             const Vector local_x = project(x);
             Vector local(dimension());
-            kernel_.diagonal_gradient_unchecked(local_x, local);
+            detail::kernel_diagonal_gradient(kernel_, local_x, local, same, 0);
             scatter(local, out);
         }
     }
@@ -116,13 +116,13 @@ private:
         });
         add_local_gradient(local, out);
     }
-    void add_diagonal_gradient(Point x, Gradient out, Gradient scratch) const {
+    void add_diagonal_gradient(Point x, Gradient out, Gradient scratch, bool same) const {
         assert(last_feature_ < x.size());
         auto local = scratch.head(dimension());
         if (contiguous_) {
-            kernel_.diagonal_gradient_unchecked(contiguous_point(x), local);
+            detail::kernel_diagonal_gradient(kernel_, contiguous_point(x), local, same, 0);
         } else {
-            kernel_.diagonal_gradient_unchecked(project(x), local);
+            detail::kernel_diagonal_gradient(kernel_, project(x), local, same, 0);
         }
         add_local_gradient(local, out);
     }
@@ -183,6 +183,12 @@ public:
     }
 
     const std::vector<SubspaceKernel<K>> &components() const { return components_; }
+
+    bool has_additive_component(detail::KernelIdentity component) const {
+        return std::any_of(components_.begin(), components_.end(), [&](const auto &kernel) {
+            return detail::contains_component(kernel, component);
+        });
+    }
     Eigen::Index parameter_count() const { return offsets_.back(); }
     Vector theta() const {
         Vector result(parameter_count());
@@ -231,11 +237,11 @@ public:
             component.add_input_gradient(x, y, out, scratch);
         }
     }
-    void diagonal_gradient_unchecked(Point x, Gradient out) const {
+    void diagonal_gradient_unchecked(Point x, Gradient out, bool same = true) const {
         out.setZero();
         Vector scratch(max_group_size_);
         for (const auto &component : components_) {
-            component.add_diagonal_gradient(x, out, scratch);
+            component.add_diagonal_gradient(x, out, scratch, same);
         }
     }
 
@@ -270,6 +276,10 @@ public:
     GPRResult<void> validate_input(Eigen::Index dimensions) const { return sum_.validate_input(dimensions); }
 
     const std::vector<SubspaceKernel<K>> &components() const { return sum_.components(); }
+
+    bool has_additive_component(detail::KernelIdentity component) const {
+        return sum_.has_additive_component(component);
+    }
     Eigen::Index parameter_count() const { return components().front().parameter_count(); }
     Vector theta() const { return components().front().theta(); }
     Bounds bounds() const { return components().front().bounds(); }
@@ -295,7 +305,7 @@ public:
         }
     }
     void input_gradient_unchecked(Point x, Point y, Gradient out) const { sum_.input_gradient_unchecked(x, y, out); }
-    void diagonal_gradient_unchecked(Point x, Gradient out) const { sum_.diagonal_gradient_unchecked(x, out); }
+    void diagonal_gradient_unchecked(Point x, Gradient out, bool same = true) const { sum_.diagonal_gradient_unchecked(x, out, same); }
 
 private:
     explicit SharedAdditiveKernel(AdditiveKernel<K> sum) : sum_(std::move(sum)) {}

@@ -18,7 +18,7 @@ enum class GPRError {
     InvalidOptimizerOptions,
     InvalidPredictionShape,
     NonScalarTarget,
-    NoAcquisitionStarts,
+    NoAcquisitionCandidates,
     InvalidKernelInput,
     NoFiniteObjective,
     EmptyParameterGrid,
@@ -34,6 +34,14 @@ enum class GPRError {
     InvalidFeatureGroup,
     EmptyAdditiveKernel,
     CallbackFailed,
+    NonFiniteTrainingData,
+    InvalidTrainingNoise,
+    NonFiniteTrainingResult,
+    InvalidTheta,
+    NonFinitePrediction,
+    NegativePredictiveVariance,
+    InvalidKernelComponent,
+    DependentKernelComponents,
 };
 
 template <class T> using GPRResult = boost::outcome_v2::std_checked<T, GPRError>;
