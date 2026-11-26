@@ -7,25 +7,28 @@ namespace super_gpr {
 using FeatureGroup = std::vector<Eigen::Index>;
 
 // Restrict a kernel to selected coordinates without erasing its concrete type.
-template <class K> class SubspaceKernel {
+template <class K> class SubspaceKernel : public detail::CheckedKernelEvaluation<SubspaceKernel<K>> {
     static_assert(IsKernel<K>::value, "K must satisfy the Kernel interface");
 
 public:
-    SubspaceKernel(K kernel, FeatureGroup features)
-        : kernel_(std::move(kernel)), features_(std::move(features)) {
-        if (features_.empty()) {
-            throw std::invalid_argument("A kernel subspace must contain at least one feature");
+    static GPRResult<SubspaceKernel> create(K kernel, FeatureGroup features) {
+        if (features.empty()) {
+            return boost::outcome_v2::failure(GPRError::InvalidFeatureGroup);
         }
-        auto sorted = features_;
+        auto sorted = features;
         std::sort(sorted.begin(), sorted.end());
         if (sorted.front() < 0 || std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) {
-            throw std::invalid_argument("Subspace features must be nonnegative and unique");
+            return boost::outcome_v2::failure(GPRError::InvalidFeatureGroup);
         }
-        required_features_ = sorted.back() + 1;
-        for (std::size_t index = 1; index < features_.size(); ++index) {
-            contiguous_ =
-                contiguous_ && features_[index] == features_.front() + static_cast<Eigen::Index>(index);
+        BOOST_OUTCOME_TRY(detail::validate_kernel_input(kernel, static_cast<Eigen::Index>(features.size()), 0));
+        return SubspaceKernel(std::move(kernel), std::move(features), sorted.back());
+    }
+
+    GPRResult<void> validate_input(Eigen::Index dimensions) const {
+        if (last_feature_ >= dimensions) {
+            return boost::outcome_v2::failure(GPRError::InvalidKernelInput);
         }
+        return boost::outcome_v2::success();
     }
 
     const K &kernel() const { return kernel_; }
@@ -33,39 +36,39 @@ public:
     Eigen::Index parameter_count() const { return kernel_.parameter_count(); }
     Vector theta() const { return kernel_.theta(); }
     Bounds bounds() const { return kernel_.bounds(); }
-    void set_theta(Point theta) { kernel_.set_theta(theta); }
+    GPRResult<void> set_theta(Point theta) { return kernel_.set_theta(theta); }
 
-    double value(Point x, Point y, bool same) const {
+    double value_unchecked(Point x, Point y, bool same) const {
         return with_points(
-            x, y, [&](Point local_x, Point local_y) { return kernel_.value(local_x, local_y, same); });
+            x, y, [&](Point local_x, Point local_y) { return kernel_.value_unchecked(local_x, local_y, same); });
     }
-    void gradient(Point x, Point y, bool same, Gradient out) const {
+    void gradient_unchecked(Point x, Point y, bool same, Gradient out) const {
         with_points(x, y,
-                    [&](Point local_x, Point local_y) { kernel_.gradient(local_x, local_y, same, out); });
+                    [&](Point local_x, Point local_y) { kernel_.gradient_unchecked(local_x, local_y, same, out); });
     }
-    void input_gradient(Point x, Point y, Gradient out) const {
+    void input_gradient_unchecked(Point x, Point y, Gradient out) const {
         out.setZero();
         if (contiguous_) {
             with_points(x, y, [&](Point local_x, Point local_y) {
-                kernel_.input_gradient(local_x, local_y, out.segment(features_.front(), dimension()));
+                kernel_.input_gradient_unchecked(local_x, local_y, out.segment(features_.front(), dimension()));
             });
         } else {
             Vector local(dimension());
             with_points(
-                x, y, [&](Point local_x, Point local_y) { kernel_.input_gradient(local_x, local_y, local); });
+                x, y, [&](Point local_x, Point local_y) { kernel_.input_gradient_unchecked(local_x, local_y, local); });
             scatter(local, out);
         }
     }
-    void diagonal_gradient(Point x, Gradient out) const {
-        check_features(x);
+    void diagonal_gradient_unchecked(Point x, Gradient out, bool same = true) const {
+        assert(last_feature_ < x.size());
         out.setZero();
         if (contiguous_) {
-            kernel_.diagonal_gradient(contiguous_point(x),
-                                      out.segment(features_.front(), dimension()));
+            detail::kernel_diagonal_gradient(kernel_, contiguous_point(x),
+                                             out.segment(features_.front(), dimension()), same, 0);
         } else {
             const Vector local_x = project(x);
             Vector local(dimension());
-            kernel_.diagonal_gradient(local_x, local);
+            detail::kernel_diagonal_gradient(kernel_, local_x, local, same, 0);
             scatter(local, out);
         }
     }
@@ -74,14 +77,16 @@ private:
     friend struct detail::TrainingKernel<SubspaceKernel<K>>;
     template <class> friend class AdditiveKernel;
 
+    SubspaceKernel(K kernel, FeatureGroup features, Eigen::Index last_feature)
+        : kernel_(std::move(kernel)), features_(std::move(features)), last_feature_(last_feature) {
+        for (std::size_t index = 1; index < features_.size(); ++index) {
+            contiguous_ = contiguous_ && features_[index] - features_.front() == static_cast<Eigen::Index>(index);
+        }
+    }
+
     Eigen::Index dimension() const { return static_cast<Eigen::Index>(features_.size()); }
     Eigen::Map<const Vector> contiguous_point(Point point) const {
         return Eigen::Map<const Vector>(point.data() + features_.front(), dimension());
-    }
-    void check_features(Point point) const {
-        if (point.size() < required_features_) {
-            throw detail::InvalidKernelInput("Subspace feature exceeds input dimension");
-        }
     }
     Vector project(Point point) const {
         Vector result(dimension());
@@ -107,24 +112,24 @@ private:
     void add_input_gradient(Point x, Point y, Gradient out, Gradient scratch) const {
         auto local = scratch.head(dimension());
         with_points(x, y, [&](Point local_x, Point local_y) {
-            kernel_.input_gradient(local_x, local_y, local);
+            kernel_.input_gradient_unchecked(local_x, local_y, local);
         });
         add_local_gradient(local, out);
     }
-    void add_diagonal_gradient(Point x, Gradient out, Gradient scratch) const {
-        check_features(x);
+    void add_diagonal_gradient(Point x, Gradient out, Gradient scratch, bool same) const {
+        assert(last_feature_ < x.size());
         auto local = scratch.head(dimension());
         if (contiguous_) {
-            kernel_.diagonal_gradient(contiguous_point(x), local);
+            detail::kernel_diagonal_gradient(kernel_, contiguous_point(x), local, same, 0);
         } else {
-            kernel_.diagonal_gradient(project(x), local);
+            detail::kernel_diagonal_gradient(kernel_, project(x), local, same, 0);
         }
         add_local_gradient(local, out);
     }
     template <class Function>
     auto with_points(Point x, Point y, Function function) const -> decltype(function(x, y)) {
-        check_features(x);
-        check_features(y);
+        assert(last_feature_ < x.size());
+        assert(last_feature_ < y.size());
         if (contiguous_) {
             return function(contiguous_point(x), contiguous_point(y));
         }
@@ -133,9 +138,7 @@ private:
         return function(local_x, local_y);
     }
     template <class Function> void with_training_points(detail::TrainingPoints x, Function function) const {
-        if (x.cols() < required_features_) {
-            throw detail::InvalidKernelInput("Subspace feature exceeds input dimension");
-        }
+        assert(last_feature_ < x.cols());
         if (contiguous_) {
             function(x.middleCols(features_.front(), dimension()));
             return;
@@ -150,28 +153,42 @@ private:
     }
     K kernel_;
     FeatureGroup features_;
-    Eigen::Index required_features_ = 0;
+    Eigen::Index last_feature_;
     bool contiguous_ = true;
 };
 
 // A runtime number of subspaces, each retaining its statically typed kernel.
-template <class K> class AdditiveKernel {
+template <class K> class AdditiveKernel : public detail::CheckedKernelEvaluation<AdditiveKernel<K>> {
 public:
-    explicit AdditiveKernel(std::vector<SubspaceKernel<K>> components) : components_(std::move(components)) {
-        if (components_.empty()) {
-            throw std::invalid_argument("An additive kernel needs at least one component");
+    static GPRResult<AdditiveKernel> create(std::vector<SubspaceKernel<K>> components) {
+        if (components.empty()) {
+            return boost::outcome_v2::failure(GPRError::EmptyAdditiveKernel);
         }
-        offsets_.reserve(components_.size() + 1);
-        offsets_.push_back(0);
-        for (const auto &component : components_) {
-            offsets_.push_back(offsets_.back() + component.parameter_count());
-            max_group_size_ = std::max(max_group_size_, component.dimension());
-        }
+        return AdditiveKernel(std::move(components));
     }
-    AdditiveKernel(const std::vector<FeatureGroup> &groups, const K &prototype)
-        : AdditiveKernel(make_components(groups, prototype)) {}
+    static GPRResult<AdditiveKernel> create(const std::vector<FeatureGroup> &groups, const K &prototype) {
+        std::vector<SubspaceKernel<K>> components;
+        components.reserve(groups.size());
+        for (const auto &group : groups) {
+            BOOST_OUTCOME_TRY(auto component, SubspaceKernel<K>::create(prototype, group));
+            components.push_back(std::move(component));
+        }
+        return create(std::move(components));
+    }
+    GPRResult<void> validate_input(Eigen::Index dimensions) const {
+        for (const auto &component : components_) {
+            BOOST_OUTCOME_TRY(component.validate_input(dimensions));
+        }
+        return boost::outcome_v2::success();
+    }
 
     const std::vector<SubspaceKernel<K>> &components() const { return components_; }
+
+    bool has_additive_component(detail::KernelIdentity component) const {
+        return std::any_of(components_.begin(), components_.end(), [&](const auto &kernel) {
+            return detail::contains_component(kernel, component);
+        });
+    }
     Eigen::Index parameter_count() const { return offsets_.back(); }
     Vector theta() const {
         Vector result(parameter_count());
@@ -190,76 +207,85 @@ public:
         }
         return result;
     }
-    void set_theta(Point theta) {
+    GPRResult<void> set_theta(Point theta) {
         if (theta.size() != parameter_count()) {
-            throw std::invalid_argument("Wrong additive theta size");
+            return boost::outcome_v2::failure(GPRError::InvalidThetaSize);
         }
         for (std::size_t index = 0; index < components_.size(); ++index) {
-            components_[index].set_theta(
-                theta.segment(offsets_[index], components_[index].parameter_count()));
+            BOOST_OUTCOME_TRY(components_[index].set_theta(
+                theta.segment(offsets_[index], components_[index].parameter_count())));
         }
+        return boost::outcome_v2::success();
     }
-    double value(Point x, Point y, bool same) const {
+    double value_unchecked(Point x, Point y, bool same) const {
         double result = 0.0;
         for (const auto &component : components_) {
-            result += component.value(x, y, same);
+            result += component.value_unchecked(x, y, same);
         }
         return result;
     }
-    void gradient(Point x, Point y, bool same, Gradient out) const {
+    void gradient_unchecked(Point x, Point y, bool same, Gradient out) const {
         for (std::size_t index = 0; index < components_.size(); ++index) {
-            components_[index].gradient(x, y, same,
+            components_[index].gradient_unchecked(x, y, same,
                                         out.segment(offsets_[index], components_[index].parameter_count()));
         }
     }
-    void input_gradient(Point x, Point y, Gradient out) const {
+    void input_gradient_unchecked(Point x, Point y, Gradient out) const {
         out.setZero();
         Vector scratch(max_group_size_);
         for (const auto &component : components_) {
             component.add_input_gradient(x, y, out, scratch);
         }
     }
-    void diagonal_gradient(Point x, Gradient out) const {
+    void diagonal_gradient_unchecked(Point x, Gradient out, bool same = true) const {
         out.setZero();
         Vector scratch(max_group_size_);
         for (const auto &component : components_) {
-            component.add_diagonal_gradient(x, out, scratch);
+            component.add_diagonal_gradient(x, out, scratch, same);
         }
     }
 
 private:
-    static std::vector<SubspaceKernel<K>> make_components(const std::vector<FeatureGroup> &groups,
-                                                          const K &prototype) {
-        std::vector<SubspaceKernel<K>> components;
-        components.reserve(groups.size());
-        for (const auto &group : groups) {
-            components.emplace_back(prototype, group);
+    explicit AdditiveKernel(std::vector<SubspaceKernel<K>> components) : components_(std::move(components)) {
+        offsets_.reserve(components_.size() + 1);
+        offsets_.push_back(0);
+        for (const auto &component : components_) {
+            offsets_.push_back(offsets_.back() + component.parameter_count());
+            max_group_size_ = std::max(max_group_size_, component.dimension());
         }
-        return components;
     }
+
     std::vector<SubspaceKernel<K>> components_;
     std::vector<Eigen::Index> offsets_;
     Eigen::Index max_group_size_ = 0;
 };
 
 template <class K>
-AdditiveKernel<K> make_additive_kernel(const std::vector<FeatureGroup> &groups, const K &prototype) {
-    return AdditiveKernel<K>(groups, prototype);
+GPRResult<AdditiveKernel<K>> make_additive_kernel(const std::vector<FeatureGroup> &groups, const K &prototype) {
+    return AdditiveKernel<K>::create(groups, prototype);
 }
 
 // Every component uses the same theta; the covariance remains a sum of kernels.
-template <class K> class SharedAdditiveKernel {
+template <class K> class SharedAdditiveKernel : public detail::CheckedKernelEvaluation<SharedAdditiveKernel<K>> {
 public:
-    SharedAdditiveKernel(const std::vector<FeatureGroup> &groups, const K &prototype)
-        : sum_(groups, prototype) {}
+    static GPRResult<SharedAdditiveKernel> create(const std::vector<FeatureGroup> &groups,
+                                                 const K &prototype) {
+        BOOST_OUTCOME_TRY(auto sum, AdditiveKernel<K>::create(groups, prototype));
+        return SharedAdditiveKernel(std::move(sum));
+    }
+    GPRResult<void> validate_input(Eigen::Index dimensions) const { return sum_.validate_input(dimensions); }
 
     const std::vector<SubspaceKernel<K>> &components() const { return sum_.components(); }
+
+    bool has_additive_component(detail::KernelIdentity component) const {
+        return sum_.has_additive_component(component);
+    }
     Eigen::Index parameter_count() const { return components().front().parameter_count(); }
     Vector theta() const { return components().front().theta(); }
     Bounds bounds() const { return components().front().bounds(); }
-    void set_theta(Point theta) {
+    GPRResult<void> set_theta(Point theta) {
         if (theta.size() != parameter_count()) {
-            throw std::invalid_argument("Wrong shared theta size");
+            return boost::outcome_v2::failure(GPRError::InvalidThetaSize);
         }
         Vector expanded(sum_.parameter_count());
         Eigen::Index offset = 0;
@@ -267,28 +293,30 @@ public:
             expanded.segment(offset, component.parameter_count()) = theta;
             offset += component.parameter_count();
         }
-        sum_.set_theta(expanded);
+        return sum_.set_theta(expanded);
     }
-    double value(Point x, Point y, bool same) const { return sum_.value(x, y, same); }
-    void gradient(Point x, Point y, bool same, Gradient out) const {
+    double value_unchecked(Point x, Point y, bool same) const { return sum_.value_unchecked(x, y, same); }
+    void gradient_unchecked(Point x, Point y, bool same, Gradient out) const {
         out.setZero();
         Vector scratch(parameter_count());
         for (const auto &component : components()) {
-            component.gradient(x, y, same, scratch);
+            component.gradient_unchecked(x, y, same, scratch);
             out += scratch;
         }
     }
-    void input_gradient(Point x, Point y, Gradient out) const { sum_.input_gradient(x, y, out); }
-    void diagonal_gradient(Point x, Gradient out) const { sum_.diagonal_gradient(x, out); }
+    void input_gradient_unchecked(Point x, Point y, Gradient out) const { sum_.input_gradient_unchecked(x, y, out); }
+    void diagonal_gradient_unchecked(Point x, Gradient out, bool same = true) const { sum_.diagonal_gradient_unchecked(x, out, same); }
 
 private:
+    explicit SharedAdditiveKernel(AdditiveKernel<K> sum) : sum_(std::move(sum)) {}
+
     AdditiveKernel<K> sum_;
 };
 
 template <class K>
-SharedAdditiveKernel<K> make_shared_additive_kernel(const std::vector<FeatureGroup> &groups,
+GPRResult<SharedAdditiveKernel<K>> make_shared_additive_kernel(const std::vector<FeatureGroup> &groups,
                                                     const K &prototype) {
-    return SharedAdditiveKernel<K>(groups, prototype);
+    return SharedAdditiveKernel<K>::create(groups, prototype);
 }
 
 namespace detail {
@@ -349,15 +377,17 @@ template <class K>
 using SharedAdditiveGP = GaussianProcessRegressor<AddKernel<SharedAdditiveKernel<K>, WhiteKernel>>;
 
 template <class K>
-AdditiveGP<K> make_additive_gp(AdditiveKernel<K> kernel, Parameter noise = {1e-4, 1e-8, 1.0},
+GPRResult<AdditiveGP<K>> make_additive_gp(AdditiveKernel<K> kernel, Parameter noise = {1e-4, 1e-8, 1.0},
                                GPROptions options = {}) {
-    return AdditiveGP<K>(std::move(kernel) + WhiteKernel(noise), std::move(options));
+    BOOST_OUTCOME_TRY(auto white, WhiteKernel::create(noise));
+    return AdditiveGP<K>(std::move(kernel) + std::move(white), std::move(options));
 }
 
 template <class K>
-SharedAdditiveGP<K> make_additive_gp(SharedAdditiveKernel<K> kernel, Parameter noise = {1e-4, 1e-8, 1.0},
+GPRResult<SharedAdditiveGP<K>> make_additive_gp(SharedAdditiveKernel<K> kernel, Parameter noise = {1e-4, 1e-8, 1.0},
                                      GPROptions options = {}) {
-    return SharedAdditiveGP<K>(std::move(kernel) + WhiteKernel(noise), std::move(options));
+    BOOST_OUTCOME_TRY(auto white, WhiteKernel::create(noise));
+    return SharedAdditiveGP<K>(std::move(kernel) + std::move(white), std::move(options));
 }
 
 } // namespace super_gpr

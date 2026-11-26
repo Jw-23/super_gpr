@@ -29,13 +29,19 @@ struct Observations {
     Matrix x;
     Vector y;
 };
-Observations read_observations(std::istream &source, Eigen::Index count, Eigen::Index dimension) {
+ExperimentResult<Observations> read_observations(std::istream &source, Eigen::Index count, Eigen::Index dimension) {
+    if (count < 0 || dimension <= 0) {
+        return boost::outcome_v2::failure(ExperimentError("Invalid BBOB observation dimensions"));
+    }
     Observations result{Matrix(count, dimension), Vector(count)};
     for (Eigen::Index row = 0; row < count; ++row) {
         for (Eigen::Index axis = 0; axis < dimension; ++axis) {
             source >> result.x(row, axis);
         }
         source >> result.y[row];
+    }
+    if (!source) {
+        return boost::outcome_v2::failure(ExperimentError("Cannot read BBOB observations"));
     }
     return result;
 }
@@ -106,7 +112,7 @@ struct Fit {
 };
 
 template <class K>
-Fit fit_kernel(const K &kernel, const Observations &training, const Matrix &query, const Warp &warp,
+ExperimentResult<Fit> fit_kernel(const K &kernel, const Observations &training, const Matrix &query, const Warp &warp,
                bool multistart) {
     GPROptions options;
     options.normalize_y = true;
@@ -123,22 +129,24 @@ Fit fit_kernel(const K &kernel, const Observations &training, const Matrix &quer
             theta[1] = std::log(static_cast<double>(start) *
                                 std::sqrt(static_cast<double>(training.x.cols()) / 3.0));
             theta[theta.size() - 1] = std::log(start == 1 ? 0.05 : 0.2);
-            initial.set_theta(theta);
+            BOOST_OUTCOME_TRY(initial.set_theta(theta));
         }
         GaussianProcessRegressor<K> model(initial, options);
-        model.fit(training.x, target).value();
+        BOOST_OUTCOME_TRY(model.fit(training.x, target));
         const auto &optimization = model.optimization_results().front();
         result.iterations += optimization.iterations;
         result.evaluations += optimization.evaluations;
         result.converged_starts += static_cast<int>(optimization.converged());
         ++result.starts;
-        const double lml = model.log_marginal_likelihood().value();
+        BOOST_OUTCOME_TRY(auto lml, model.log_marginal_likelihood());
         if (lml > result.lml) {
             result.lml = lml;
             result.parameters = model.kernel().theta().array().exp();
             result.best_converged = optimization.converged();
-            result.prediction = warp.mean(model.predict(query).value());
-            const Vector train_error = warp.mean(model.predict(training.x).value()) - training.y;
+            BOOST_OUTCOME_TRY(auto prediction, model.predict(query));
+            BOOST_OUTCOME_TRY(auto fitted, model.predict(training.x));
+            result.prediction = warp.mean(prediction);
+            const Vector train_error = warp.mean(fitted) - training.y;
             result.train_rmse = std::sqrt(train_error.squaredNorm() / static_cast<double>(target.size()));
         }
     }
@@ -146,19 +154,22 @@ Fit fit_kernel(const K &kernel, const Observations &training, const Matrix &quer
     result.warp_center = warp.center;
     result.warp_scale = warp.scale;
     if (!result.prediction.allFinite()) {
-        throw std::runtime_error("Non-finite back-transformed prediction");
+        return boost::outcome_v2::failure(ExperimentError("Non-finite back-transformed prediction"));
     }
     return result;
 }
 
-Fit fit(const Candidate &candidate, const Observations &training, const Matrix &query) {
+ExperimentResult<Fit> fit(const Candidate &candidate, const Observations &training, const Matrix &query) {
     const Warp warp(training.y, candidate.warped);
-    const auto stationary = ConstantKernel({1.0, 1e-5, 100.0}) * Matern({1.0, 0.1, 100.0}, 2.5);
-    const WhiteKernel noise({0.001, 1e-8, 0.5});
+    BOOST_OUTCOME_TRY(auto amplitude, ConstantKernel::create({1.0, 1e-5, 100.0}));
+    BOOST_OUTCOME_TRY(auto radial, Matern::create({1.0, 0.1, 100.0}, 2.5));
+    BOOST_OUTCOME_TRY(auto noise, WhiteKernel::create({0.001, 1e-8, 0.5}));
+    const auto stationary = amplitude * radial;
     if (candidate.quadratic) {
         const double dimension_scale = static_cast<double>(training.x.cols()) / 3.0;
-        const auto dot = (1.0 / dimension_scale) * DotProduct(Parameter::fixed(std::sqrt(dimension_scale)));
-        const auto kernel = stationary + ConstantKernel({1.0, 1e-5, 100.0}) * dot * dot + noise;
+        BOOST_OUTCOME_TRY(auto linear, DotProduct::create(Parameter::fixed(std::sqrt(dimension_scale))));
+        BOOST_OUTCOME_TRY(auto dot, (1.0 / dimension_scale) * linear);
+        const auto kernel = stationary + amplitude * dot * dot + noise;
         return fit_kernel(kernel, training, query, warp, candidate.multistart);
     }
     return fit_kernel(stationary + noise, training, query, warp, candidate.multistart);
@@ -232,7 +243,7 @@ void emit(const Scenario &scenario, const Candidate &candidate, const std::strin
     std::cout << '\n' << std::flush;
 }
 
-void evaluate(const Scenario &scenario, const Observations &training, const Observations &testing,
+ExperimentResult<void> evaluate(const Scenario &scenario, const Observations &training, const Observations &testing,
               const Observations &local) {
     const auto split = folds(training, scenario.seed);
     const double train_variance = (training.y.array() - training.y.mean()).square().mean();
@@ -241,7 +252,7 @@ void evaluate(const Scenario &scenario, const Observations &training, const Obse
         double error = 0.0;
         int fold_index = 0;
         for (const auto &fold : split) {
-            const auto result = fit(candidate, fold.training, fold.validation.x);
+            BOOST_OUTCOME_TRY(auto result, fit(candidate, fold.training, fold.validation.x));
             error += (result.prediction - fold.validation.y).squaredNorm();
             emit(scenario, candidate, "cv", fold_index++, false, 0.0, fold.training, fold.validation, result);
         }
@@ -256,27 +267,26 @@ void evaluate(const Scenario &scenario, const Observations &training, const Obse
     query << testing.x, local.x;
     for (std::size_t index = 0; index < candidates().size(); ++index) {
         const auto &candidate = candidates()[index];
-        const auto result = fit(candidate, training, query);
+        BOOST_OUTCOME_TRY(auto result, fit(candidate, training, query));
         emit(scenario, candidate, "test", -1, index == best, scores[index], training, testing, result, local);
         const double variance = (testing.y.array() - testing.y.mean()).square().sum();
         const double error = (result.prediction.head(testing.y.size()) - testing.y).squaredNorm();
         std::cerr << "Finished " << candidate.name << " R2=" << 1.0 - error / variance
                   << " seconds=" << result.seconds << '\n';
     }
+    return boost::outcome_v2::success();
 }
-} // namespace
-
-int main(int argc, char **argv) try {
+ExperimentResult<void> run(int argc, char **argv) {
     Eigen::setNbThreads(1);
     if (argc != 2) {
-        throw std::invalid_argument("Usage: full_gp_improvement BBOB_DATA_DIRECTORY");
+        return boost::outcome_v2::failure(ExperimentError("Usage: full_gp_improvement BBOB_DATA_DIRECTORY"));
     }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) -- argc guards argv access.
     const std::string directory(argv[1]);
     std::ifstream manifest(directory + "/cases.txt");
     Scenario scenario;
     if (!(manifest >> scenario.seed >> scenario.instance)) {
-        throw std::runtime_error("Cannot read BBOB manifest");
+        return boost::outcome_v2::failure(ExperimentError("Cannot read BBOB manifest"));
     }
     std::cout << std::setprecision(12)
               << "function,instance,seed,dimension,train_count,candidate,phase,fold,selected,cv_nrmse,"
@@ -287,19 +297,23 @@ int main(int argc, char **argv) try {
     std::string file;
     while (manifest >> scenario.function >> file) {
         std::ifstream source(std::string(directory).append("/").append(file));
-        source.exceptions(std::ios::failbit | std::ios::badbit);
         Eigen::Index dimension = 0;
         Eigen::Index testing = 0;
         Eigen::Index local = 0;
-        source >> dimension >> scenario.count >> testing >> local;
-        const auto training = read_observations(source, scenario.count, dimension);
-        const auto test_data = read_observations(source, testing, dimension);
-        const auto local_data = read_observations(source, local, dimension);
+        if (!(source >> dimension >> scenario.count >> testing >> local) ||
+            dimension <= 0 || scenario.count < 3 || testing <= 0 || local < 0) {
+            return boost::outcome_v2::failure(ExperimentError("Invalid BBOB case header"));
+        }
+        BOOST_OUTCOME_TRY(auto training, read_observations(source, scenario.count, dimension));
+        BOOST_OUTCOME_TRY(auto test_data, read_observations(source, testing, dimension));
+        BOOST_OUTCOME_TRY(auto local_data, read_observations(source, local, dimension));
         std::cerr << "Starting " << scenario.function << " instance=" << scenario.instance << '\n';
-        evaluate(scenario, training, test_data, local_data);
+        BOOST_OUTCOME_TRY(evaluate(scenario, training, test_data, local_data));
     }
-    return 0;
-} catch (const std::exception &error) {
-    std::cerr << error.what() << '\n';
-    return 1;
+    return boost::outcome_v2::success();
+}
+} // namespace
+
+int main(int argc, char **argv) {
+    return super_gpr_experiments::report_experiment(run(argc, argv));
 }

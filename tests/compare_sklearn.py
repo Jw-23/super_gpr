@@ -44,7 +44,9 @@ def main():
         "fixed": ConstantKernel(2., "fixed") * RBF([.7, 1.3], [[.7, .7], [1e-5, 1e5]]),
     }
     for name, kernel in kernels.items():
-        matrix, gradient = kernel(x, eval_gradient=True)
+        features = 1 if name == "periodic" else x.shape[1]
+        inputs = x[:, :features]
+        matrix, gradient = kernel(inputs, eval_gradient=True)
         # Equal numeric bounds fix individual ARD axes in super_gpr.
         # sklearn only supports fixing the entire ARD parameter group.
         if name == "fixed":
@@ -53,7 +55,7 @@ def main():
         else:
             theta = kernel.theta
         compare(name + ".train", matrix)
-        compare(name + ".cross", kernel(x, query))
+        compare(name + ".cross", kernel(inputs, query[:, :features]))
         compare(name + ".theta", theta)
         compare(name + ".gradient", gradient)
 

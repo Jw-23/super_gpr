@@ -30,11 +30,12 @@ struct OptimizationResult {
     }
 };
 
-enum class OptimizationError { InvalidBounds, InvalidOptions, NoFiniteObjective };
+enum class OptimizationError { InvalidBounds, InvalidOptions, NoFiniteObjective, CallbackFailed };
 using LBFGSBResult = boost::outcome_v2::std_checked<OptimizationResult, OptimizationError>;
 
 // Minimize f(x). The callback must write df/dx into gradient.
-using Objective = std::function<double(const Vector &, Vector &)>;
+using ObjectiveResult = boost::outcome_v2::std_checked<double, OptimizationError>;
+using Objective = std::function<ObjectiveResult(const Vector &, Vector &)>;
 LBFGSBResult minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
                              const LBFGSBOptions &options = {});
 

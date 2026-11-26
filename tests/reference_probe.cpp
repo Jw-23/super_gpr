@@ -28,16 +28,16 @@ Matrix query_x() {
     x << 0.2, -0.1, 0.8, 0.4, 2.0, 0.2;
     return x;
 }
-void report_kernel(const std::string &name, const BoxedKernel &kernel) {
-    const Matrix x = training_x();
-    emit(name + ".train", covariance(kernel, x));
-    emit(name + ".cross", covariance(kernel, x, query_x()));
+void report_kernel(const std::string &name, const BoxedKernel &kernel, Eigen::Index dimensions) {
+    const Matrix x = training_x().leftCols(dimensions);
+    emit(name + ".train", covariance(kernel, x).value());
+    emit(name + ".cross", covariance(kernel, x, query_x().leftCols(dimensions)).value());
     emit(name + ".theta", kernel.theta());
     Matrix derivatives(x.rows() * x.rows(), kernel.parameter_count());
     Vector gradient(kernel.parameter_count());
     for (Eigen::Index row = 0; row < x.rows(); ++row) {
         for (Eigen::Index col = 0; col < x.rows(); ++col) {
-            kernel.gradient(x.row(row).transpose(), x.row(col).transpose(), row == col, gradient);
+            kernel.gradient(x.row(row).transpose(), x.row(col).transpose(), row == col, gradient).value();
             derivatives.row(row * x.rows() + col) = gradient.transpose();
         }
     }
@@ -63,27 +63,27 @@ int main() try {
     using namespace super_gpr;
     std::cout << std::setprecision(17);
     const std::vector<std::pair<std::string, BoxedKernel>> kernels{
-        {"rbf", BoxedKernel(RBF(Parameter{0.7}))},
-        {"ard", BoxedKernel(RBF(std::vector<Parameter>{{0.7}, {1.3}}))},
-        {"matern05", BoxedKernel(Matern(Parameter{0.7}, 0.5))},
-        {"matern15", BoxedKernel(Matern(Parameter{0.7}, 1.5))},
-        {"matern25", BoxedKernel(Matern(std::vector<Parameter>{{0.7}, {1.3}}, 2.5))},
-        {"materninf", BoxedKernel(Matern(Parameter{0.7}, std::numeric_limits<double>::infinity()))},
-        {"rq", BoxedKernel(RationalQuadratic({0.8}, {1.4}))},
-        {"periodic", BoxedKernel(ExpSineSquared({0.8}, {1.7}))},
-        {"dot", BoxedKernel(DotProduct({0.6}))},
-        {"constant", BoxedKernel(ConstantKernel({1.2}))},
-        {"white", BoxedKernel(WhiteKernel({0.2}))},
-        {"composite", BoxedKernel(1.7 * (RBF{} + DotProduct{}) * (ConstantKernel{} + WhiteKernel{}))},
-        {"fixed", BoxedKernel(ConstantKernel(Parameter::fixed(2.0)) *
-                              RBF(std::vector<Parameter>{Parameter::fixed(0.7), {1.3}}))}};
+        {"rbf", BoxedKernel(RBF::create(Parameter{0.7}).value())},
+        {"ard", BoxedKernel(RBF::create(std::vector<Parameter>{{0.7}, {1.3}}).value())},
+        {"matern05", BoxedKernel(Matern::create(Parameter{0.7}, 0.5).value())},
+        {"matern15", BoxedKernel(Matern::create(Parameter{0.7}, 1.5).value())},
+        {"matern25", BoxedKernel(Matern::create(std::vector<Parameter>{{0.7}, {1.3}}, 2.5).value())},
+        {"materninf", BoxedKernel(Matern::create(Parameter{0.7}, std::numeric_limits<double>::infinity()).value())},
+        {"rq", BoxedKernel(RationalQuadratic::create({0.8}, {1.4}).value())},
+        {"periodic", BoxedKernel(ExpSineSquared::create({0.8}, {1.7}).value())},
+        {"dot", BoxedKernel(DotProduct::create({0.6}).value())},
+        {"constant", BoxedKernel(ConstantKernel::create({1.2}).value())},
+        {"white", BoxedKernel(WhiteKernel::create({0.2}).value())},
+        {"composite", BoxedKernel((1.7 * (RBF{} + DotProduct{})).value() * (ConstantKernel{} + WhiteKernel{}))},
+        {"fixed", BoxedKernel(ConstantKernel::create(Parameter::fixed(2.0)).value() *
+                              RBF::create(std::vector<Parameter>{Parameter::fixed(0.7), {1.3}}).value())}};
     for (const auto &entry : kernels) {
-        report_kernel(entry.first, entry.second);
+        report_kernel(entry.first, entry.second, entry.first == "periodic" ? 1 : 2);
     }
     Matrix targets(6, 1);
     targets << 1.2, 0.7, -0.1, -0.8, -0.3, 0.4;
-    const BoxedKernel kernel(ConstantKernel({1.2}) * RBF(std::vector<Parameter>{{0.7}, {1.1}}) +
-                             WhiteKernel({0.03}));
+    const BoxedKernel kernel(ConstantKernel::create({1.2}).value() * RBF::create(std::vector<Parameter>{{0.7}, {1.1}}).value() +
+                             WhiteKernel::create({0.03}).value());
     GPROptions options;
     options.optimize = false;
     options.alpha = 0.02;
@@ -100,8 +100,8 @@ int main() try {
     x.col(0) = Vector::LinSpaced(12, -2.0, 3.0);
     Matrix y(12, 1);
     y.col(0) = (1.5 * x.col(0).array()).sin() + 0.1 * (8.0 * x.col(0).array()).cos();
-    const BoxedKernel optimized(ConstantKernel({1.3, 1e-3, 10.0}) * RBF({0.7, 0.1, 5.0}) +
-                                WhiteKernel({0.02, 1e-5, 0.5}));
+    const BoxedKernel optimized(ConstantKernel::create({1.3, 1e-3, 10.0}).value() * RBF::create({0.7, 0.1, 5.0}).value() +
+                                WhiteKernel::create({0.02, 1e-5, 0.5}).value());
     options = GPROptions{};
     options.optimizer.gradient_tolerance = 1e-8;
     options.optimizer.function_tolerance = 1e-12;

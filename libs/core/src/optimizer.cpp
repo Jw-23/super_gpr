@@ -1,4 +1,5 @@
 #include <LBFGSB.h>
+#include <boost/outcome/try.hpp>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -25,17 +26,29 @@ std::vector<Eigen::Index> active_coordinates(const Bounds &bounds) {
 
 LBFGSBResult minimize_lbfgsb(const Objective &objective, Vector initial, const Bounds &bounds,
                              const LBFGSBOptions &options) {
-    if (bounds.lower.size() != initial.size() || bounds.upper.size() != initial.size() ||
-        (bounds.lower.array() > bounds.upper.array()).any()) {
+    if (!detail::valid_optimizer_bounds(bounds, initial.size())) {
         return boost::outcome_v2::failure(OptimizationError::InvalidBounds);
     }
+    if (options.memory <= 0 || options.max_iterations < 0 || options.max_line_search <= 0 ||
+        !std::isfinite(options.gradient_tolerance) || options.gradient_tolerance < 0.0 ||
+        !std::isfinite(options.function_tolerance) || options.function_tolerance < 0.0) {
+        return boost::outcome_v2::failure(OptimizationError::InvalidOptions);
+    }
     initial = initial.cwiseMax(bounds.lower).cwiseMin(bounds.upper);
+    const auto invoke = [&](const Vector &point, Vector &gradient) -> ObjectiveResult {
+        try {
+            return objective(point, gradient);
+        } catch (...) {
+            return boost::outcome_v2::failure(OptimizationError::CallbackFailed);
+        }
+    };
     const auto active = active_coordinates(bounds);
     OptimizationResult result;
     result.x = initial;
     result.gradient.resize(initial.size());
     if (active.empty()) {
-        result.value = objective(result.x, result.gradient);
+        BOOST_OUTCOME_TRY(auto value, invoke(result.x, result.gradient));
+        result.value = value;
         result.evaluations = 1;
         if (!std::isfinite(result.value) || !result.gradient.allFinite()) {
             return boost::outcome_v2::failure(OptimizationError::NoFiniteObjective);
@@ -55,15 +68,25 @@ LBFGSBResult minimize_lbfgsb(const Objective &objective, Vector initial, const B
     Vector point = initial;
     Vector full_gradient(initial.size());
     double best = std::numeric_limits<double>::infinity();
-    bool in_callback = false;
+    bool callback_failed = false;
+    OptimizationError callback_error = OptimizationError::CallbackFailed;
     auto evaluate = [&](const Vector &x, Vector &gradient) {
         for (Eigen::Index index = 0; index < size; ++index) {
             point[active[static_cast<std::size_t>(index)]] = x[index];
         }
-        in_callback = true;
-        const double value = objective(point, full_gradient);
-        in_callback = false;
+        if (callback_failed) {
+            gradient.setZero(size);
+            return std::numeric_limits<double>::infinity();
+        }
+        const auto outcome = invoke(point, full_gradient);
         ++result.evaluations;
+        if (!outcome) {
+            callback_error = outcome.error();
+            callback_failed = true;
+            gradient.setZero(size);
+            return std::numeric_limits<double>::infinity();
+        }
+        const double value = outcome.value();
         gradient.resize(size);
         for (Eigen::Index index = 0; index < size; ++index) {
             gradient[index] = full_gradient[active[static_cast<std::size_t>(index)]];
@@ -85,26 +108,24 @@ LBFGSBResult minimize_lbfgsb(const Objective &objective, Vector initial, const B
     parameters.past = options.function_tolerance > 0.0 ? 1 : 0;
     parameters.delta = options.function_tolerance;
     double value = 0.0;
+    bool line_search_failed = false;
     try {
         LBFGSpp::LBFGSBSolver<double> solver(parameters);
         result.iterations = solver.minimize(evaluate, reduced, value, lower, upper);
-    } catch (const std::invalid_argument &) {
-        if (in_callback) {
-            throw;
-        }
-        return boost::outcome_v2::failure(OptimizationError::InvalidOptions);
+    } catch (const std::logic_error &) {
+        line_search_failed = true;
     } catch (const std::runtime_error &) {
-        if (in_callback) {
-            throw;
-        }
-        if (!std::isfinite(best)) {
-            return boost::outcome_v2::failure(OptimizationError::NoFiniteObjective);
-        }
-        result.status = OptimizationStatus::LineSearchFailure;
-        return result;
+        line_search_failed = true;
+    }
+    if (callback_failed) {
+        return boost::outcome_v2::failure(callback_error);
     }
     if (!std::isfinite(best)) {
         return boost::outcome_v2::failure(OptimizationError::NoFiniteObjective);
+    }
+    if (line_search_failed) {
+        result.status = OptimizationStatus::LineSearchFailure;
+        return result;
     }
     const double projected =
         ((result.x - result.gradient).cwiseMax(bounds.lower).cwiseMin(bounds.upper) - result.x)
@@ -147,8 +168,8 @@ GPRResult<void> Cholesky::compute(Eigen::MatrixXd matrix) {
     assert(matrix.rows() > 0 && matrix.rows() == matrix.cols());
     const lapack_int n = lapack_size(matrix.rows());
     const lapack_int status = LAPACKE_dpotrf(LAPACK_COL_MAJOR, 'L', n, matrix.data(), n);
-    // A nonpositive pivot or NaN (-4 from LAPACKE) invalidates the factor.
-    if (status != 0) {
+    // LAPACKE may report success with infinite diagonal entries.
+    if (status != 0 || !matrix.diagonal().allFinite()) {
         factor_.resize(0, 0);
         return boost::outcome_v2::failure(GPRError::NonPositiveDefiniteCovariance);
     }

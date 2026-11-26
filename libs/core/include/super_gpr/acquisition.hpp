@@ -2,9 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <initializer_list>
 #include <limits>
-#include <stdexcept>
 #include <super_gpr/gpr.hpp>
 #include <utility>
 #include <vector>
@@ -114,35 +112,34 @@ using PI = ProbabilityOfImprovement;
 // Cartesian product in feature order. The last feature varies fastest.
 class ParameterGrid {
 public:
-    ParameterGrid(std::initializer_list<std::vector<double>> axes)
-        : ParameterGrid(std::vector<std::vector<double>>(axes)) {}
-
-    explicit ParameterGrid(std::vector<std::vector<double>> axes) : axes_(std::move(axes)) {
-        if (axes_.empty()) {
-            throw std::invalid_argument("Parameter grid must have at least one feature");
+    static GPRResult<ParameterGrid> create(std::vector<std::vector<double>> axes) {
+        if (axes.empty()) {
+            return boost::outcome_v2::failure(GPRError::EmptyParameterGrid);
         }
-        for (const auto &axis : axes_) {
+        Eigen::Index size = 1;
+        for (const auto &axis : axes) {
             if (axis.empty()) {
-                throw std::invalid_argument("Each grid feature must have at least one value");
+                return boost::outcome_v2::failure(GPRError::EmptyGridAxis);
             }
-            if (axis.size() > static_cast<std::size_t>(std::numeric_limits<Eigen::Index>::max() / size_)) {
-                throw std::overflow_error("Parameter grid size exceeds the candidate index range");
+            if (axis.size() > static_cast<std::size_t>(std::numeric_limits<Eigen::Index>::max() / size)) {
+                return boost::outcome_v2::failure(GPRError::GridSizeOverflow);
             }
             for (const double value : axis) {
                 if (!std::isfinite(value)) {
-                    throw std::invalid_argument("Parameter grid values must be finite");
+                    return boost::outcome_v2::failure(GPRError::NonFiniteCandidates);
                 }
             }
-            size_ *= static_cast<Eigen::Index>(axis.size());
+            size *= static_cast<Eigen::Index>(axis.size());
         }
+        return ParameterGrid(std::move(axes), size);
     }
 
     Eigen::Index size() const { return size_; }
     Eigen::Index dimensions() const { return static_cast<Eigen::Index>(axes_.size()); }
 
-    Vector operator[](Eigen::Index index) const {
+    GPRResult<Vector> operator[](Eigen::Index index) const {
         if (index < 0 || index >= size()) {
-            throw std::out_of_range("Parameter grid index is out of range");
+            return boost::outcome_v2::failure(GPRError::InvalidGridIndex);
         }
         Vector point(dimensions());
         for (Eigen::Index feature = point.size(); feature > 0; --feature) {
@@ -155,8 +152,11 @@ public:
     }
 
 private:
+    ParameterGrid(std::vector<std::vector<double>> axes, Eigen::Index size)
+        : axes_(std::move(axes)), size_(size) {}
+
     std::vector<std::vector<double>> axes_;
-    Eigen::Index size_ = 1;
+    Eigen::Index size_;
 };
 
 struct SuggestOptions {
@@ -174,32 +174,47 @@ struct Suggestion {
 
 namespace detail {
 
-inline std::vector<Eigen::Index> sorted_exclusions(const SuggestOptions &options,
-                                                   Eigen::Index candidate_count) {
+inline GPRResult<AcquisitionValue> evaluate_acquisition(const AcquisitionFunction &acquisition,
+                                                        double mean, double deviation) {
+    try {
+        return acquisition.evaluate(mean, deviation);
+    } catch (...) {
+        return boost::outcome_v2::failure(GPRError::CallbackFailed);
+    }
+}
+
+inline GPRResult<std::vector<Eigen::Index>> sorted_exclusions(const SuggestOptions &options,
+                                                            Eigen::Index candidate_count) {
     auto excluded = options.excluded_indices;
     std::sort(excluded.begin(), excluded.end());
     if (!excluded.empty() && (excluded.front() < 0 || excluded.back() >= candidate_count)) {
-        throw std::invalid_argument("Excluded candidate index is out of range");
+        return boost::outcome_v2::failure(GPRError::InvalidExcludedIndex);
     }
     excluded.erase(std::unique(excluded.begin(), excluded.end()), excluded.end());
     return excluded;
 }
 
 template <class K, class CopyPoint>
-Suggestion suggest_discrete(const GaussianProcessRegressor<K> &model, const AcquisitionFunction &acquisition,
-                            Eigen::Index candidate_count, Eigen::Index dimensions,
-                            const SuggestOptions &options, const CopyPoint &copy_point) {
-    if (dimensions != model.n_features_in() || model.mean_offset().value().size() != 1) {
-        throw std::invalid_argument("Suggestion requires matching features and a scalar target");
+GPRResult<Suggestion> suggest_discrete(const GaussianProcessRegressor<K> &model,
+                                       const AcquisitionFunction &acquisition, Eigen::Index candidate_count,
+                                       Eigen::Index dimensions, const SuggestOptions &options,
+                                       const CopyPoint &copy_point) {
+    BOOST_OUTCOME_TRY(auto features, model.n_features_in());
+    if (dimensions != features) {
+        return boost::outcome_v2::failure(GPRError::InvalidPredictionShape);
+    }
+    BOOST_OUTCOME_TRY(auto offset, model.mean_offset());
+    if (offset.size() != 1) {
+        return boost::outcome_v2::failure(GPRError::NonScalarTarget);
     }
     if (options.batch_size <= 0) {
-        throw std::invalid_argument("Suggestion batch size must be positive");
+        return boost::outcome_v2::failure(GPRError::InvalidBatchSize);
     }
-    const auto excluded = sorted_exclusions(options, candidate_count);
+    BOOST_OUTCOME_TRY(auto excluded, sorted_exclusions(options, candidate_count));
     auto next_exclusion = excluded.begin();
     Eigen::Index remaining = candidate_count - static_cast<Eigen::Index>(excluded.size());
     if (remaining == 0) {
-        return {};
+        return boost::outcome_v2::failure(GPRError::NoAcquisitionCandidates);
     }
 
     Matrix batch(std::min(remaining, options.batch_size), dimensions);
@@ -216,17 +231,18 @@ Suggestion suggest_discrete(const GaussianProcessRegressor<K> &model, const Acqu
                 ++next_exclusion;
                 ++candidate;
             }
-            copy_point(candidate, batch.row(row));
+            BOOST_OUTCOME_TRY(copy_point(candidate, batch.row(row)));
             indices[static_cast<std::size_t>(row)] = candidate;
             ++candidate;
         }
 
-        const auto prediction = model.predict(batch).value();
+        BOOST_OUTCOME_TRY(auto prediction, model.predict(batch, false, PredictionTarget::Latent));
         for (Eigen::Index row = 0; row < batch.rows(); ++row) {
-            const double value =
-                acquisition.evaluate(prediction.mean(row, 0), prediction.standard_deviation(row, 0)).value;
+            BOOST_OUTCOME_TRY(auto score, evaluate_acquisition(
+                acquisition, prediction.mean(row, 0), prediction.standard_deviation(row, 0)));
+            const double value = score.value;
             if (!std::isfinite(value)) {
-                throw std::domain_error("Suggestion requires finite acquisition values");
+                continue;
             }
             if (!best || (maximize ? value > best.value : value < best.value)) {
                 best.x = batch.row(row).transpose();
@@ -236,6 +252,9 @@ Suggestion suggest_discrete(const GaussianProcessRegressor<K> &model, const Acqu
         }
         remaining -= batch.rows();
     }
+    if (!best) {
+        return boost::outcome_v2::failure(GPRError::NonFiniteAcquisition);
+    }
     return best;
 }
 
@@ -243,22 +262,29 @@ Suggestion suggest_discrete(const GaussianProcessRegressor<K> &model, const Acqu
 
 // The result index is the original zero-based candidate row, with ties resolved in row order.
 template <class K>
-Suggestion suggest(const GaussianProcessRegressor<K> &model, const AcquisitionFunction &acquisition,
-                   const Matrix &candidates, const SuggestOptions &options = {}) {
+GPRResult<Suggestion> suggest(const GaussianProcessRegressor<K> &model, const AcquisitionFunction &acquisition,
+                             const Matrix &candidates, const SuggestOptions &options = {}) {
     if (!candidates.allFinite()) {
-        throw std::invalid_argument("Suggestion candidates must be finite");
+        return boost::outcome_v2::failure(GPRError::NonFiniteCandidates);
     }
     return detail::suggest_discrete(
         model, acquisition, candidates.rows(), candidates.cols(), options,
-        [&candidates](Eigen::Index index, auto row) { row = candidates.row(index); });
+        [&candidates](Eigen::Index index, auto row) -> GPRResult<void> {
+            row = candidates.row(index);
+            return boost::outcome_v2::success();
+        });
 }
 
 // The result index addresses the grid directly. The grid is generated one batch at a time.
 template <class K>
-Suggestion suggest(const GaussianProcessRegressor<K> &model, const AcquisitionFunction &acquisition,
-                   const ParameterGrid &grid, const SuggestOptions &options = {}) {
+GPRResult<Suggestion> suggest(const GaussianProcessRegressor<K> &model, const AcquisitionFunction &acquisition,
+                             const ParameterGrid &grid, const SuggestOptions &options = {}) {
     return detail::suggest_discrete(model, acquisition, grid.size(), grid.dimensions(), options,
-                                    [&grid](Eigen::Index index, auto row) { row = grid[index].transpose(); });
+        [&grid](Eigen::Index index, auto row) -> GPRResult<void> {
+            BOOST_OUTCOME_TRY(auto point, grid[index]);
+            row = point.transpose();
+            return boost::outcome_v2::success();
+        });
 }
 
 // result.value and result.gradient use the native acquisition sign, including EI/PI.
@@ -266,17 +292,35 @@ template <class K>
 GPRResult<OptimizationResult> optimize_acquisition(const GaussianProcessRegressor<K> &model,
                                                    const AcquisitionFunction &acquisition,
                                                    const Matrix &starts, const Bounds &bounds,
-                                                   const LBFGSBOptions &options) try {
-    if (starts.rows() == 0) {
-        return boost::outcome_v2::failure(GPRError::NoAcquisitionStarts);
+                                                   const LBFGSBOptions &options) {
+    if (!starts.allFinite()) {
+        return boost::outcome_v2::failure(GPRError::NonFiniteCandidates);
     }
     BOOST_OUTCOME_TRY(model.validate_point_prediction(starts.cols()));
+    if (starts.rows() == 0) {
+        return boost::outcome_v2::failure(GPRError::NoAcquisitionCandidates);
+    }
     const double sign = acquisition.maximize() ? -1.0 : 1.0;
-    auto objective = [&](const Vector &point, Vector &gradient) {
-        const auto posterior = model.posterior_with_gradients(point);
-        const auto value = acquisition.evaluate(posterior.mean, posterior.standard_deviation);
-        gradient = sign * (value.mean_derivative * posterior.mean_gradient +
-                           value.deviation_derivative * posterior.standard_deviation_gradient);
+    GPRError callback_error = GPRError::CallbackFailed;
+    auto objective = [&](const Vector &point, Vector &gradient) -> ObjectiveResult {
+        const auto posterior = model.posterior_with_gradients(point, PredictionTarget::Latent);
+        if (!posterior) {
+            callback_error = posterior.error();
+            return boost::outcome_v2::failure(OptimizationError::CallbackFailed);
+        }
+        const auto &prediction = posterior.value();
+        const auto score = detail::evaluate_acquisition(acquisition, prediction.mean, prediction.standard_deviation);
+        if (!score) {
+            callback_error = score.error();
+            return boost::outcome_v2::failure(OptimizationError::CallbackFailed);
+        }
+        const auto &value = score.value();
+        gradient = sign * (value.mean_derivative * prediction.mean_gradient +
+                           value.deviation_derivative * prediction.standard_deviation_gradient);
+        if (!std::isfinite(value.value) || !gradient.allFinite()) {
+            gradient.setZero();
+            return std::numeric_limits<double>::infinity();
+        }
         return sign * value.value;
     };
     OptimizationResult best;
@@ -284,18 +328,26 @@ GPRResult<OptimizationResult> optimize_acquisition(const GaussianProcessRegresso
     for (Eigen::Index row = 0; row < starts.rows(); ++row) {
         auto outcome = minimize_lbfgsb(objective, starts.row(row).transpose(), bounds, options);
         if (!outcome) {
-            return boost::outcome_v2::failure(detail::optimizer_error(outcome.error()));
+            switch (outcome.error()) {
+            case OptimizationError::NoFiniteObjective:
+                continue;
+            case OptimizationError::CallbackFailed:
+                return boost::outcome_v2::failure(callback_error);
+            default:
+                return boost::outcome_v2::failure(detail::optimizer_error(outcome.error()));
+            }
         }
         auto &result = outcome.value();
         if (result.value < best.value) {
             best = std::move(result);
         }
     }
+    if (!std::isfinite(best.value)) {
+        return boost::outcome_v2::failure(GPRError::NonFiniteAcquisition);
+    }
     best.value *= sign;
     best.gradient *= sign;
     return best;
-} catch (const detail::InvalidKernelInput &) {
-    return boost::outcome_v2::failure(GPRError::InvalidKernelInput);
 }
 
 } // namespace super_gpr
